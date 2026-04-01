@@ -118,6 +118,9 @@ class DoctorSchema(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     summary: str = ""
+    likely_condition: str = ""
+    prevention_tips: List[str] = Field(default_factory=list)
+    emergency_warning: str = ""
     specialty: Optional[str] = None
     urgency_level: str = "low"
     next_steps: List[str] = Field(default_factory=list)
@@ -210,7 +213,7 @@ SPECIALTY_HINTS = {
     ],
     "neurologist": [
         "headache", "migraine", "dizziness", "numbness", "seizure",
-        "vision loss", "confusion", "stroke", "голов", "онем", "bosh",
+        "vision loss", "confusion", "stroke", "голов", "онем", "bosh", "boshim", "kalla", "kallam",
     ],
     "dermatologist": [
         "rash", "itching", "itchy", "hives", "skin", "eczema",
@@ -226,7 +229,7 @@ SPECIALTY_HINTS = {
     ],
     "orthopedist": [
         "back pain", "joint", "ankle", "fracture", "sprain",
-        "knee", "bone", "neck pain", "спина", "сустав", "oyoq",
+        "knee", "bone", "neck pain", "спина", "сустав", "oyoq", "bel", "belim",
     ],
 }
 
@@ -310,14 +313,424 @@ MEDIUM_URGENCY_HINTS = [
     "persistent pain", "worsening", "can't sleep from pain", "can't eat",
     "cannot eat", "can't keep fluids", "rash with fever", "migraine",
     "высокая температура", "рвота", "сильная боль", "ухудшается",
-    "isitma", "qusish", "qattiq og'riq", "yomonlashyapti",
+    "isitma", "qusish", "qattiq og'riq", "yomonlashyapti", "qattiq", "kuchli",
+    "qus", "kuchayayapti", "zo'rayapti", "chidab bo'lmaydi",
 ]
+
+GENERAL_SYMPTOM_HINTS = [
+    "pain", "ache", "fever", "temperature", "cough", "cold", "flu", "rash", "itch",
+    "dizzy", "dizziness", "nausea", "vomit", "vomiting", "diarrhea", "breath",
+    "breathing", "shortness", "headache", "migraine", "weak", "weakness",
+    "swelling", "burning", "urination", "urine", "chest", "stomach", "abdomen",
+    "back", "joint", "throat", "runny nose", "sore throat", "fatigue", "tired",
+    "og'ri", "isitma", "yo'tal", "shamoll", "tomoq", "ko'ngil ayn", "qus",
+    "ich ket", "nafas", "bosh", "karaxt", "toshma", "qich", "qorin", "oshqozon",
+    "bel", "bo'g'im", "siydik", "holsiz", "charch", "yurak", "ko'krak",
+]
+
+VAGUE_INPUT_HINTS = [
+    "help", "need help", "what should i do", "i am sick", "i feel sick", "not well",
+    "feel bad", "feeling bad", "maslahat", "yordam", "nima qilay", "kasalman",
+    "o'zimni yomon his qilyapman", "yaxshi emasman", "ahvolim yomon", "simptom yo'q",
+]
+
+SYMPTOM_BUCKET_HINTS = {
+    "cardiac": [
+        "chest pain", "pressure in chest", "palpitations", "rapid heartbeat", "heart",
+        "ko'krak", "yurak",
+    ],
+    "headache": [
+        "headache", "migraine", "dizziness", "numbness", "vision loss", "confusion",
+        "bosh", "kalla", "karaxt", "ko'rish",
+    ],
+    "skin": [
+        "rash", "itch", "itching", "itchy", "hives", "skin", "eczema", "acne",
+        "toshma", "qich", "teri",
+    ],
+    "child": [
+        "child", "baby", "infant", "toddler", "daughter", "son", "farzand",
+        "bola", "chaqaloq",
+    ],
+    "mental_health": [
+        "panic", "anxiety", "depressed", "depression", "self harm", "can't sleep",
+        "stress", "vahima", "xavotir", "tushkun", "uyqu yo'q",
+    ],
+    "back": [
+        "back pain", "joint", "ankle", "fracture", "sprain", "knee", "bone", "neck pain",
+        "bel", "belim", "bo'g'im", "oyoq", "suyak", "jarohat",
+    ],
+    "stomach": [
+        "stomach", "abdomen", "nausea", "vomit", "vomiting", "diarrhea", "constipation",
+        "abdominal", "qorin", "oshqozon", "ko'ngil ayn", "qus", "ich ket", "ich qot",
+    ],
+    "urinary": [
+        "urine", "urination", "burning when i pee", "pain when i pee", "frequent urination",
+        "bladder", "siydik", "tez-tez siyish", "achishish",
+    ],
+    "cold_flu": [
+        "cold", "flu", "cough", "runny nose", "sore throat", "congestion", "sneezing",
+        "shamoll", "gripp", "yo'tal", "burun oq", "tomoq", "tumov",
+    ],
+    "fever": [
+        "fever", "temperature", "high temp", "hot body", "isitma", "harorat",
+    ],
+}
+
+BUCKET_TO_SPECIALTY = {
+    "cardiac": "cardiologist",
+    "headache": "neurologist",
+    "skin": "dermatologist",
+    "child": "pediatrician",
+    "mental_health": "psychiatrist",
+    "back": "orthopedist",
+}
 
 TRIAGE_MODE = "grounded_rules"
 
 
 def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def contains_any(lowered: str, hints: List[str]) -> bool:
+    return any(hint in lowered for hint in hints)
+
+
+def has_specific_symptom_details(lowered: str) -> bool:
+    if contains_any(lowered, GENERAL_SYMPTOM_HINTS):
+        return True
+    if contains_any(lowered, EMERGENCY_KEYWORDS):
+        return True
+    if contains_any(lowered, MEDIUM_URGENCY_HINTS):
+        return True
+    if any(contains_any(lowered, hints) for hints in SPECIALTY_HINTS.values()):
+        return True
+    return any(contains_any(lowered, hints) for hints in SYMPTOM_BUCKET_HINTS.values())
+
+
+def needs_more_symptom_details(lowered: str) -> bool:
+    if not lowered:
+        return True
+    if has_specific_symptom_details(lowered):
+        return False
+
+    token_count = len(re.findall(r"\w+", lowered, flags=re.UNICODE))
+    if contains_any(lowered, VAGUE_INPUT_HINTS):
+        return True
+    return token_count < 4
+
+
+def extract_severity_score(lowered: str) -> Optional[int]:
+    match = re.search(r"\b(10|[1-9])\s*/\s*10\b", lowered)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def detect_symptom_bucket(lowered: str, specialty: str) -> str:
+    ordered_buckets = [
+        "cardiac",
+        "mental_health",
+        "child",
+        "headache",
+        "skin",
+        "stomach",
+        "urinary",
+        "back",
+        "cold_flu",
+        "fever",
+    ]
+    for bucket in ordered_buckets:
+        if contains_any(lowered, SYMPTOM_BUCKET_HINTS[bucket]):
+            return bucket
+
+    for bucket, mapped_specialty in BUCKET_TO_SPECIALTY.items():
+        if specialty == mapped_specialty:
+            return bucket
+
+    return "general"
+
+
+def detail_request_payload(language: str) -> dict:
+    texts = {
+        "en": {
+            "summary": "There is not enough symptom detail yet to give a targeted triage answer.",
+            "advice": "Please write the main symptom first, such as headache, fever, cough, stomach pain, rash, or chest pain.",
+            "steps": [
+                "Mention where the problem is in the body.",
+                "Add how long it has been going on and whether it feels mild, moderate, or severe.",
+            ],
+            "questions": [
+                "What is the main symptom?",
+                "How long has it been going on?",
+                "Is it mild, moderate, or severe right now?",
+            ],
+        },
+        "ru": {
+            "summary": "Пока недостаточно данных о симптомах, чтобы дать точный триаж-ответ.",
+            "advice": "Сначала напишите основной симптом, например головная боль, температура, кашель, боль в животе, сыпь или боль в груди.",
+            "steps": [
+                "Укажите, где именно беспокоит.",
+                "Добавьте, как давно это длится и насколько сильно ощущается.",
+            ],
+            "questions": [
+                "Какой основной симптом?",
+                "Как давно это продолжается?",
+                "Сейчас это легкое, среднее или сильное состояние?",
+            ],
+        },
+        "uz": {
+            "summary": "Aniq triage javobi berish uchun hozircha simptom tafsiloti yetarli emas.",
+            "advice": "Avval asosiy belgini yozing: masalan bosh og'rig'i, isitma, yo'tal, qorin og'rig'i, toshma yoki ko'krak og'rig'i.",
+            "steps": [
+                "Belgi qayerda ekanini yozing.",
+                "Qachondan beri davom etayotgani va yengilmi, o'rtachami yoki kuchlimi yozing.",
+            ],
+            "questions": [
+                "Asosiy belgi nima?",
+                "Bu qachondan beri davom etyapti?",
+                "Hozir yengilmi, o'rtachami yoki kuchlimi?",
+            ],
+        },
+    }
+    lang = language if language in texts else "en"
+    selected = texts[lang]
+    return {
+        "urgency": "low",
+        "specialty": None,
+        "summary": selected["summary"],
+        "advice": selected["advice"],
+        "next_steps": selected["steps"],
+        "follow_up_questions": selected["questions"],
+        "needs_more_detail": True,
+        "likely_condition": "",
+        "prevention_tips": [],
+    }
+
+
+def symptom_bucket_summary(language: str, bucket: str) -> str:
+    summaries = {
+        "en": {
+            "cardiac": "Chest or heart-related symptoms were detected and need careful review.",
+            "headache": "Headache or neurologic-type symptoms were detected.",
+            "skin": "Skin-related symptoms were detected.",
+            "child": "This looks like a child health concern and should be monitored carefully.",
+            "mental_health": "Mental health or stress-related symptoms were detected.",
+            "back": "Back, joint, or injury-related symptoms were detected.",
+            "stomach": "Stomach or digestive symptoms were detected.",
+            "urinary": "Urinary symptoms were detected.",
+            "cold_flu": "Cold, cough, throat, or flu-like symptoms were detected.",
+            "fever": "Fever-related symptoms were detected.",
+        },
+        "uz": {
+            "cardiac": "Ko'krak yoki yurak bilan bog'liq belgilar aniqlandi.",
+            "headache": "Bosh og'rig'i yoki asab tizimi bilan bog'liq belgilar aniqlandi.",
+            "skin": "Teri bilan bog'liq belgilar aniqlandi.",
+            "child": "Bu bola salomatligi bilan bog'liq holatga o'xshaydi va diqqat bilan kuzatilishi kerak.",
+            "mental_health": "Ruhiy zo'riqish yoki xavotirga o'xshash belgilar aniqlandi.",
+            "back": "Bel, bo'g'im yoki jarohat bilan bog'liq belgilar aniqlandi.",
+            "stomach": "Qorin yoki hazm tizimi bilan bog'liq belgilar aniqlandi.",
+            "urinary": "Siydik yo'li bilan bog'liq belgilar aniqlandi.",
+            "cold_flu": "Shamollash, tomoq yoki grippga o'xshash belgilar aniqlandi.",
+            "fever": "Isitma bilan bog'liq belgilar aniqlandi.",
+        },
+    }
+    if language not in summaries:
+        return ""
+    return summaries[language].get(bucket, "")
+
+
+def symptom_bucket_advice(language: str, bucket: str, urgency: str) -> str:
+    advice = {
+        "en": {
+            "cardiac": "Chest or heart-like symptoms should be checked promptly, especially if they are new, worsening, or come with dizziness or shortness of breath.",
+            "headache": "Headache or dizziness can sometimes be simple, but sudden, severe, or worsening symptoms need earlier medical review.",
+            "skin": "Rash or itching is often less urgent, but spreading rash, swelling, pain, or fever should be checked sooner.",
+            "child": "Symptoms in a child can change faster than in adults, so fluids, breathing, activity, and fever should be watched closely.",
+            "mental_health": "Anxiety, panic, or low mood deserves early support, especially if sleep, safety, or daily function is affected.",
+            "back": "Back or joint pain often improves with rest, but weakness, numbness, swelling, or pain after injury needs medical review.",
+            "stomach": "Stomach symptoms can lead to dehydration, so fluids matter now and worsening pain, vomiting, or diarrhea needs earlier care.",
+            "urinary": "Painful or frequent urination can fit a urinary problem and should be checked sooner if there is fever, back pain, or blood in urine.",
+            "cold_flu": "Cough, sore throat, or flu-like symptoms are often viral, but breathing trouble, chest pain, or worsening fever should be checked sooner.",
+            "fever": "Fever often comes from infection and may improve with rest and fluids, but persistent high fever or marked weakness needs review.",
+        },
+        "uz": {
+            "cardiac": "Ko'krak yoki yurakka o'xshash belgilar, ayniqsa yangi bo'lsa, kuchaysa yoki bosh aylanishi va nafas qisilishi bilan kelsa, tezroq ko'rikni talab qiladi.",
+            "headache": "Bosh og'rig'i yoki bosh aylanishi ba'zan yengil bo'lishi mumkin, lekin to'satdan boshlangan, kuchli yoki kuchayib borayotgan holat erta ko'rikni talab qiladi.",
+            "skin": "Toshma yoki qichishish ko'pincha kamroq shoshilinch bo'ladi, lekin tarqalsa, shishsa, og'risa yoki isitma qo'shilsa tezroq tekshiruv kerak.",
+            "child": "Boladagi belgilar kattalarnikiga qaraganda tez o'zgarishi mumkin, shuning uchun suyuqlik ichishi, nafasi, faolligi va isitmasini diqqat bilan kuzatish kerak.",
+            "mental_health": "Xavotir, vahima yoki tushkunlikni erta qo'llab-quvvatlash kerak, ayniqsa uyqu, xavfsizlik yoki kundalik holatga ta'sir qilsa.",
+            "back": "Bel yoki bo'g'im og'rig'i ko'pincha dam bilan kamayadi, lekin karaxtlik, holsizlik, shish yoki jarohatdan keyingi og'riq ko'rikni talab qiladi.",
+            "stomach": "Qorin bilan bog'liq belgilar suvsizlanishga olib kelishi mumkin, shuning uchun hozir suyuqlik muhim, og'riq, qusish yoki ich ketishi kuchaysa erta ko'rik kerak.",
+            "urinary": "Siyganda achishish yoki tez-tez siyish siydik yo'li bilan bog'liq muammoni ko'rsatishi mumkin, isitma, bel og'rig'i yoki siydikda qon bo'lsa tezroq ko'rik zarur.",
+            "cold_flu": "Yo'tal, tomoq og'rig'i yoki grippga o'xshash belgilar ko'pincha virusli bo'ladi, lekin nafas qisilishi, ko'krak og'rig'i yoki kuchayib borayotgan isitma bo'lsa tezroq tekshiruv kerak.",
+            "fever": "Isitma ko'pincha infeksiya bilan bog'liq bo'ladi va dam hamda suyuqlik bilan yengillashi mumkin, lekin baland yoki davomli isitma va kuchli holsizlik ko'rikni talab qiladi.",
+        },
+    }
+    if language not in advice:
+        return ""
+
+    text = advice[language].get(bucket, "")
+    if not text:
+        return ""
+    if urgency == "medium":
+        return f"{text} {default_text(language, 'same_day_step')}"
+    return text
+
+
+def symptom_follow_up_questions(language: str, bucket: str) -> List[str]:
+    questions = {
+        "en": {
+            "cardiac": [
+                "Is the chest symptom pressure, pain, tightness, or a racing heartbeat?",
+                "Do you also have shortness of breath, dizziness, or pain spreading to the arm or jaw?",
+                default_text("en", "question_duration"),
+            ],
+            "headache": [
+                "Did the headache or dizziness start suddenly or build up gradually?",
+                "Is there vomiting, vision change, numbness, or weakness too?",
+                default_text("en", "question_severity"),
+            ],
+            "skin": [
+                "Where is the rash or itching, and is it spreading?",
+                "Is there swelling, pain, or a new food, medicine, or skin product involved?",
+                default_text("en", "question_duration"),
+            ],
+            "child": [
+                "How old is the child, and what is the main symptom?",
+                "Is the child drinking fluids, active, and breathing normally?",
+                default_text("en", "question_red_flags"),
+            ],
+            "mental_health": [
+                "Is this mainly anxiety, panic, low mood, or inability to sleep?",
+                "Is safety affected, or are you feeling at risk of harming yourself?",
+                default_text("en", "question_duration"),
+            ],
+            "back": [
+                "Did the pain start after lifting, strain, or an injury?",
+                "Is there numbness, weakness, swelling, or pain going down the leg or arm?",
+                default_text("en", "question_severity"),
+            ],
+            "stomach": [
+                "Where is the pain: upper abdomen, lower abdomen, or all over?",
+                "Do you also have vomiting, diarrhea, or fever?",
+                "Can you keep fluids down?",
+            ],
+            "urinary": [
+                "Is there burning with urination, frequency, blood in urine, or lower abdominal pain?",
+                "Do you also have fever or back pain?",
+                default_text("en", "question_duration"),
+            ],
+            "cold_flu": [
+                "Is it mainly cough, sore throat, runny nose, or fever?",
+                "Do you also have shortness of breath or chest pain?",
+                default_text("en", "question_duration"),
+            ],
+            "fever": [
+                "What is the approximate temperature?",
+                "How many days has the fever been going on?",
+                "Are cough, weakness, or breathing symptoms also present?",
+            ],
+        },
+        "uz": {
+            "cardiac": [
+                "Ko'krakdagi belgi siqishmi, sanchishmi yoki yurak tez urishidekmi?",
+                "Nafas qisilishi, bosh aylanishi yoki og'riq qo'lga va jag'ga tarqalishi ham bormi?",
+                default_text("uz", "question_duration"),
+            ],
+            "headache": [
+                "Bosh og'rig'i yoki bosh aylanishi to'satdan boshlandimi yoki asta kuchaydimi?",
+                "Qusish, ko'rish o'zgarishi, karaxtlik yoki holsizlik ham bormi?",
+                default_text("uz", "question_severity"),
+            ],
+            "skin": [
+                "Toshma yoki qichishish qayerda va tarqalayaptimi?",
+                "Shish, og'riq yoki yangi ovqat, dori yoki krem bilan bog'liqligi bormi?",
+                default_text("uz", "question_duration"),
+            ],
+            "child": [
+                "Bolaning yoshi nechada va asosiy belgi nima?",
+                "Bola suyuqlik ichyaptimi, faolmi va nafasi odatiymi?",
+                default_text("uz", "question_red_flags"),
+            ],
+            "mental_health": [
+                "Bu ko'proq xavotir, vahima, tushkunlik yoki uxlay olmaslikmi?",
+                "Xavfsizlikka ta'sir qilyaptimi yoki o'zingizga zarar fikri bormi?",
+                default_text("uz", "question_duration"),
+            ],
+            "back": [
+                "Og'riq ko'tarish, zo'riqish yoki jarohatdan keyin boshlandimi?",
+                "Karaxtlik, holsizlik, shish yoki oyoq-qo'lga tarqalish ham bormi?",
+                default_text("uz", "question_severity"),
+            ],
+            "stomach": [
+                "Og'riq qayerda: yuqori qorin, pastki qorin yoki butun qorinmi?",
+                "Qusish, ich ketishi yoki isitma ham bormi?",
+                "Suyuqlik ichib tura olyapsizmi?",
+            ],
+            "urinary": [
+                "Siyganda achishish, tez-tez siyish, pastki qorin og'rig'i yoki siydikda qon bormi?",
+                "Isitma yoki bel og'rig'i ham qo'shilganmi?",
+                default_text("uz", "question_duration"),
+            ],
+            "cold_flu": [
+                "Asosiy belgi yo'talmi, tomoq og'rig'imi, tumovmi yoki isitmami?",
+                "Nafas qisilishi yoki ko'krak og'rig'i ham bormi?",
+                default_text("uz", "question_duration"),
+            ],
+            "fever": [
+                "Harorat taxminan necha?",
+                "Isitma necha kundan beri davom etyapti?",
+                "Yo'tal, holsizlik yoki nafas bilan belgi ham bormi?",
+            ],
+        },
+    }
+    if language not in questions:
+        return [
+            default_text(language, "question_duration"),
+            default_text(language, "question_severity"),
+            default_text(language, "question_red_flags"),
+        ]
+    return questions[language].get(
+        bucket,
+        [
+            default_text(language, "question_duration"),
+            default_text(language, "question_severity"),
+            default_text(language, "question_red_flags"),
+        ],
+    )
+
+
+def symptom_bucket_likely_condition(language: str, bucket: str) -> str:
+    conditions = {
+        "en": {
+            "cardiac": "A heart or chest-related condition",
+            "headache": "A headache, migraine, or neurologic-type condition",
+            "skin": "A skin or allergy-related condition",
+            "child": "A child health condition needing closer monitoring",
+            "mental_health": "An anxiety, panic, or other mental health condition",
+            "back": "A back, joint, or injury-related condition",
+            "stomach": "A stomach or digestive condition",
+            "urinary": "A urinary tract-related condition",
+            "cold_flu": "A cold, throat infection, or flu-like condition",
+            "fever": "An infection or inflammation-related fever condition",
+        },
+        "uz": {
+            "cardiac": "Yurak yoki ko'krak bilan bog'liq holat",
+            "headache": "Bosh og'rig'i, migren yoki asab tizimi bilan bog'liq holat",
+            "skin": "Teri yoki allergik holat",
+            "child": "Bolaga oid diqqatli ko'rikni talab qiladigan holat",
+            "mental_health": "Xavotir, stress yoki boshqa ruhiy salomatlik holati",
+            "back": "Bel, bo'g'im yoki jarohat bilan bog'liq holat",
+            "stomach": "Oshqozon-ichak yoki qorin bilan bog'liq holat",
+            "urinary": "Siydik yo'li bilan bog'liq holat",
+            "cold_flu": "Shamollash, tomoq infeksiyasi yoki grippga o'xshash holat",
+            "fever": "Isitma bilan kechayotgan infeksiya yoki yallig'lanish holati",
+        },
+    }
+    if language not in conditions:
+        return ""
+    return conditions[language].get(bucket, "")
 
 
 def shorten_advice(text: str, max_sentences: int = 2, max_chars: int = 180) -> str:
@@ -614,6 +1027,332 @@ def emergency_advice(language: str, reason: Optional[str]) -> str:
     return advice[lang]["default"]
 
 
+def likely_condition_text(language: str, specialty: str, reason: Optional[str], urgent: bool) -> str:
+    if urgent and reason:
+        urgent_map = {
+            "en": {
+                "breathing": "Possible severe breathing emergency",
+                "cardiac": "Possible heart emergency",
+                "stroke": "Possible stroke",
+                "bleeding": "Possible severe bleeding emergency",
+                "neurologic": "Possible seizure or unconsciousness emergency",
+                "allergy": "Possible severe allergic reaction",
+                "overdose": "Possible overdose or self-harm emergency",
+                "trauma": "Possible major injury",
+                "pregnancy": "Possible pregnancy emergency",
+                "infant": "Possible infant emergency",
+            },
+            "ru": {
+                "breathing": "Возможная тяжелая дыхательная неотложная ситуация",
+                "cardiac": "Возможная сердечная неотложная ситуация",
+                "stroke": "Возможный инсульт",
+                "bleeding": "Возможное сильное кровотечение",
+                "neurologic": "Возможный приступ или потеря сознания",
+                "allergy": "Возможная тяжелая аллергическая реакция",
+                "overdose": "Возможная передозировка или риск самоповреждения",
+                "trauma": "Возможная серьезная травма",
+                "pregnancy": "Возможная неотложная ситуация при беременности",
+                "infant": "Возможная неотложная ситуация у младенца",
+            },
+            "uz": {
+                "breathing": "Og'ir nafas bilan bog'liq shoshilinch holat bo'lishi mumkin",
+                "cardiac": "Yurak bilan bog'liq shoshilinch holat bo'lishi mumkin",
+                "stroke": "Insult bo'lishi mumkin",
+                "bleeding": "Kuchli qon ketish bo'lishi mumkin",
+                "neurologic": "Talvasa yoki hushdan ketish holati bo'lishi mumkin",
+                "allergy": "Kuchli allergik reaksiya bo'lishi mumkin",
+                "overdose": "Doza oshishi yoki o'ziga zarar xavfi bo'lishi mumkin",
+                "trauma": "Jiddiy jarohat bo'lishi mumkin",
+                "pregnancy": "Homiladorlikdagi shoshilinch holat bo'lishi mumkin",
+                "infant": "Chaqaloqdagi shoshilinch holat bo'lishi mumkin",
+            },
+        }
+        lang = language if language in urgent_map else "en"
+        return urgent_map[lang].get(reason, urgent_map[lang].get("cardiac", "Possible emergency"))
+
+    by_specialty = {
+        "general practitioner": {
+            "en": "A general medical condition that needs in-person evaluation",
+            "ru": "Общее состояние, требующее очного осмотра",
+            "uz": "Ko'rikni talab qiladigan umumiy holat",
+        },
+        "cardiologist": {
+            "en": "A heart-related condition",
+            "ru": "Состояние, связанное с сердцем",
+            "uz": "Yurak bilan bog'liq holat",
+        },
+        "neurologist": {
+            "en": "A brain, nerve, or severe headache-related condition",
+            "ru": "Состояние, связанное с мозгом, нервами или сильной головной болью",
+            "uz": "Miya, asab yoki kuchli bosh og'rig'i bilan bog'liq holat",
+        },
+        "dermatologist": {
+            "en": "A skin-related condition",
+            "ru": "Состояние, связанное с кожей",
+            "uz": "Teri bilan bog'liq holat",
+        },
+        "pediatrician": {
+            "en": "A child health condition",
+            "ru": "Состояние, связанное со здоровьем ребенка",
+            "uz": "Bola salomatligi bilan bog'liq holat",
+        },
+        "psychiatrist": {
+            "en": "A mental health condition",
+            "ru": "Состояние, связанное с психическим здоровьем",
+            "uz": "Ruhiy salomatlik bilan bog'liq holat",
+        },
+        "orthopedist": {
+            "en": "A bone, joint, or injury-related condition",
+            "ru": "Состояние, связанное с костями, суставами или травмой",
+            "uz": "Suyak, bo'g'im yoki jarohat bilan bog'liq holat",
+        },
+    }
+    lang = language if language in {"en", "ru", "uz"} else "en"
+    return by_specialty.get(specialty, by_specialty["general practitioner"])[lang]
+
+
+def prevention_tips_text(language: str, specialty: str, urgent: bool) -> List[str]:
+    tips = {
+        "en": {
+            "general practitioner": ["Stay hydrated and rest well.", "Seek early medical review if symptoms return or worsen."],
+            "cardiologist": ["Avoid smoking and control blood pressure.", "Get urgent care early for chest pain or palpitations."],
+            "neurologist": ["Sleep regularly and avoid dehydration.", "Get checked early if headaches, weakness, or numbness return."],
+            "dermatologist": ["Avoid known skin triggers and irritants.", "Keep the affected area clean and monitored."],
+            "pediatrician": ["Monitor temperature and fluid intake closely.", "Keep vaccinations and routine child checkups up to date."],
+            "psychiatrist": ["Reduce stress and keep a stable sleep routine.", "Seek help early if anxiety, panic, or low mood returns."],
+            "orthopedist": ["Avoid overuse and protect the injured area.", "Use early assessment for swelling, severe pain, or limited movement."],
+            "urgent": ["Do not delay urgent care for severe warning signs.", "Get medical help early if the same warning signs happen again."],
+        },
+        "ru": {
+            "general practitioner": ["Пейте достаточно воды и отдыхайте.", "Обратитесь к врачу раньше, если симптомы вернутся или усилятся."],
+            "cardiologist": ["Избегайте курения и контролируйте давление.", "При боли в груди или сердцебиении обращайтесь за помощью раньше."],
+            "neurologist": ["Соблюдайте режим сна и избегайте обезвоживания.", "Раннее обследование нужно при повторении головной боли, слабости или онемения."],
+            "dermatologist": ["Избегайте известных раздражителей кожи.", "Держите пораженную область в чистоте и наблюдайте за ней."],
+            "pediatrician": ["Следите за температурой и питьем у ребенка.", "Соблюдайте вакцинацию и плановые осмотры ребенка."],
+            "psychiatrist": ["Снижайте стресс и поддерживайте стабильный сон.", "Обращайтесь за помощью раньше при возвращении тревоги или подавленности."],
+            "orthopedist": ["Избегайте перегрузки и защищайте травмированную область.", "Рано обследуйтесь при отеке, сильной боли или ограничении движений."],
+            "urgent": ["Не откладывайте срочную помощь при опасных симптомах.", "Обращайтесь раньше, если такие признаки повторятся."],
+        },
+        "uz": {
+            "general practitioner": ["Ko'proq suyuqlik iching va yaxshi dam oling.", "Belgilar qaytsa yoki kuchaysa, ertaroq ko'rikka boring."],
+            "cardiologist": ["Chekishdan saqlaning va qon bosimini nazorat qiling.", "Ko'krak og'rig'i yoki yurak urishi bo'lsa, tezroq yordam oling."],
+            "neurologist": ["Uyqu rejimini saqlang va suvsizlanmang.", "Bosh og'rig'i, karaxtlik yoki holsizlik qaytsa, erta tekshiruvdan o'ting."],
+            "dermatologist": ["Teri uchun zararli triggerlardan saqlaning.", "Ta'sirlangan joyni toza saqlang va kuzating."],
+            "pediatrician": ["Bola harorati va suyuqlik ichishini kuzating.", "Vaksina va reja asosidagi ko'riklarni o'tkazib yubormang."],
+            "psychiatrist": ["Stressni kamaytiring va uyquni me'yorida saqlang.", "Vahima yoki tushkunlik qaytsa, ertaroq yordam so'rang."],
+            "orthopedist": ["Shikastlangan joyni asrang va ortiqcha zo'riqtirmang.", "Shish, kuchli og'riq yoki harakat cheklansa, erta tekshiruvdan o'ting."],
+            "urgent": ["Xavfli belgilar bo'lsa yordamni kechiktirmang.", "Shu belgilar qayta bo'lsa, darhol tibbiy yordamga murojaat qiling."],
+        },
+    }
+    lang = language if language in tips else "en"
+    key = "urgent" if urgent else specialty
+    return tips[lang].get(key, tips[lang]["general practitioner"])
+
+
+def symptom_specific_advice(language: str, specialty: str, lowered: str, urgency: str) -> str:
+    advice = {
+        "en": {
+            "cardiologist": "Chest symptoms need prompt medical assessment, especially if they are new, stronger than usual, or come with shortness of breath.",
+            "neurologist": "Headache, dizziness, numbness, or confusion should be monitored closely because worsening neurologic symptoms need urgent evaluation.",
+            "dermatologist": "Skin symptoms like rash or itching should be kept clean and observed, especially if they are spreading or becoming painful.",
+            "pediatrician": "Symptoms in a child should be watched carefully because dehydration, fever, or breathing changes can worsen faster than in adults.",
+            "psychiatrist": "Strong anxiety, panic, or emotional distress deserves support early, especially if you feel unsafe or unable to calm down.",
+            "orthopedist": "Back, neck, joint, or injury-related pain often improves with rest, but weakness, numbness, or limited movement needs medical review.",
+            "general practitioner": "These symptoms need a general medical review if they keep going, spread, or start affecting normal eating, drinking, sleep, or movement.",
+            "fever": "Fever often improves with rest and fluids, but high fever that persists or comes with breathing trouble should be checked soon.",
+            "stomach": "Stomach symptoms can lead to dehydration, so fluids matter now and worsening pain or vomiting should be checked earlier.",
+            "cold_flu": "Cold or flu-like symptoms often improve with rest and fluids, but worsening cough, weakness, or fever should be reviewed.",
+        },
+        "ru": {
+            "cardiologist": "Симптомы со стороны груди требуют быстрого осмотра врача, особенно если они новые, усиливаются или сопровождаются одышкой.",
+            "neurologist": "Головную боль, головокружение, онемение или спутанность нужно внимательно отслеживать, потому что усиление неврологических симптомов требует срочной оценки.",
+            "dermatologist": "Сыпь, зуд и другие кожные изменения нужно держать в чистоте и наблюдать, особенно если они распространяются или становятся болезненными.",
+            "pediatrician": "Симптомы у ребенка нужно наблюдать особенно внимательно, потому что обезвоживание, температура или проблемы с дыханием могут усилиться быстрее.",
+            "psychiatrist": "Сильную тревогу, панику или эмоциональный стресс важно воспринимать серьезно, особенно если вы чувствуете небезопасность или не можете успокоиться.",
+            "orthopedist": "Боль в спине, шее, суставах или после травмы часто уменьшается в покое, но слабость, онемение или ограничение движений требуют осмотра.",
+            "general practitioner": "Эти симптомы требуют общего медицинского осмотра, если они не проходят, распространяются или начинают мешать обычной жизни.",
+            "fever": "Температура часто уменьшается после отдыха и жидкости, но стойкая высокая температура или проблемы с дыханием требуют скорого осмотра.",
+            "stomach": "Симптомы со стороны живота могут быстро привести к обезвоживанию, поэтому сейчас важна жидкость, а усиление боли или рвоты требует более раннего осмотра.",
+            "cold_flu": "Симптомы простуды или гриппа часто уменьшаются после отдыха и жидкости, но усиление кашля, слабости или температуры требует осмотра.",
+        },
+        "uz": {
+            "cardiologist": "Ko'krak bilan bog'liq belgilar, ayniqsa yangi bo'lsa, kuchaysa yoki nafas qisilishi bilan kelsa, tez ko'rikni talab qiladi.",
+            "neurologist": "Bosh og'rig'i, bosh aylanishi, karaxtlik yoki chalkashlikni diqqat bilan kuzatish kerak, chunki kuchayib borayotgan nevrologik belgilar tez baholanishi kerak.",
+            "dermatologist": "Toshma, qichishish yoki boshqa teri belgilarini toza saqlab kuzatish kerak, ayniqsa ular tarqalayotgan yoki og'riqli bo'lsa.",
+            "pediatrician": "Boladagi belgilarni kattalarnikiga qaraganda diqqat bilan kuzatish kerak, chunki suvsizlanish, isitma yoki nafas o'zgarishi tez kuchayishi mumkin.",
+            "psychiatrist": "Kuchli xavotir, vahima yoki ruhiy bosimni jiddiy qabul qilish kerak, ayniqsa o'zingizni xavfsiz his qilmasangiz.",
+            "orthopedist": "Bel, bo'yin, bo'g'im yoki shikast bilan bog'liq og'riq ko'pincha dam bilan kamayadi, lekin karaxtlik, holsizlik yoki harakat cheklanishi ko'rikni talab qiladi.",
+            "general practitioner": "Bu belgilar o'tmayotgan bo'lsa, tarqalsa yoki ovqatlanish, ichish, uyqu yoki harakatga halaqit bera boshlasa umumiy ko'rik kerak.",
+            "fever": "Isitma ko'pincha dam va suyuqlik bilan pasayadi, lekin baland harorat saqlansa yoki nafas bilan muammo qo'shilsa tez ko'rik kerak.",
+            "stomach": "Qorin bilan bog'liq belgilar suvsizlanishga olib kelishi mumkin, shuning uchun hozir suyuqlik muhim, og'riq yoki qusish kuchaysa tezroq ko'rik zarur.",
+            "cold_flu": "Shamollash yoki grippga o'xshash belgilar ko'pincha dam va suyuqlik bilan yengillashadi, lekin yo'tal, holsizlik yoki isitma kuchaysa ko'rik kerak.",
+        },
+    }
+
+    lang = language if language in advice else "en"
+    bucket = specialty if specialty in advice[lang] else "general practitioner"
+
+    if "fever" in lowered or "temperature" in lowered or "isitma" in lowered or "темпера" in lowered:
+        bucket = "fever"
+    elif "stomach" in lowered or "abdomen" in lowered or "nausea" in lowered or "vomit" in lowered or "qorin" in lowered or "живот" in lowered:
+        bucket = "stomach"
+    elif "cold" in lowered or "flu" in lowered or "cough" in lowered or "shamoll" in lowered or "gripp" in lowered or "простуд" in lowered:
+        bucket = "cold_flu"
+
+    text = advice[lang].get(bucket, advice[lang]["general practitioner"])
+    if urgency == "medium":
+        return f"{text} {default_text(language, 'same_day_step')}"
+    return text
+
+
+def symptom_specific_steps(language: str, specialty: str, lowered: str, urgency: str) -> List[str]:
+    steps = {
+        "en": {
+            "cardiologist": [
+                "Stop physical activity and sit upright while monitoring chest discomfort or palpitations.",
+                "Avoid caffeine, nicotine, and heavy meals until you are checked.",
+            ],
+            "neurologist": [
+                "Rest in a quiet, dark place and avoid driving if you feel dizzy, weak, or confused.",
+                "Drink water and seek urgent care quickly if headache, numbness, or vision changes worsen.",
+            ],
+            "dermatologist": [
+                "Avoid scratching the area and gently wash the skin with mild soap and water.",
+                "Do not apply new cosmetic or irritating skin products until the rash is assessed.",
+            ],
+            "pediatrician": [
+                "Check the child's temperature, fluids, and activity level closely.",
+                "Keep the child hydrated and seek same-day care if they are unusually sleepy or breathing poorly.",
+            ],
+            "psychiatrist": [
+                "Move to a safe, calm place and contact a trusted person now.",
+                "Avoid being alone if panic, self-harm thoughts, or severe distress are happening.",
+            ],
+            "orthopedist": [
+                "Rest the painful area and reduce weight-bearing or strain.",
+                "Use a cold pack for 15 to 20 minutes if there is swelling or recent injury.",
+            ],
+            "back": [
+                "Avoid heavy lifting, repeated bending, or twisting for now and change positions slowly.",
+                "Use warmth for stiffness or a cold pack if the pain started after strain or a recent injury.",
+            ],
+            "general practitioner": [
+                "Rest, hydrate, and monitor whether the symptoms are improving or getting worse.",
+                "Book an in-person evaluation if symptoms persist, spread, or interfere with eating, drinking, or sleeping.",
+            ],
+            "fever": [
+                "Drink extra fluids and rest while checking your temperature regularly.",
+                "Seek same-day care if fever stays high, lasts more than a day or two, or comes with breathing trouble.",
+            ],
+            "stomach": [
+                "Take small sips of water and avoid heavy, greasy, or spicy foods for now.",
+                "Get checked sooner if pain becomes severe, you cannot keep fluids down, or vomiting continues.",
+            ],
+        },
+        "ru": {
+            "cardiologist": [
+                "Прекратите физическую нагрузку и присядьте, наблюдая за болью в груди или сердцебиением.",
+                "Избегайте кофеина, никотина и тяжелой еды, пока вас не осмотрит врач.",
+            ],
+            "neurologist": [
+                "Отдохните в тихом темном месте и не садитесь за руль при головокружении, слабости или спутанности.",
+                "Пейте воду и срочно обращайтесь за помощью, если головная боль, онемение или нарушение зрения усиливаются.",
+            ],
+            "dermatologist": [
+                "Не расчесывайте участок и аккуратно промойте кожу мягким мылом и водой.",
+                "Не наносите новые косметические или раздражающие средства, пока сыпь не оценит врач.",
+            ],
+            "pediatrician": [
+                "Внимательно следите за температурой, питьем и активностью ребенка.",
+                "Поддерживайте питьевой режим и обращайтесь в тот же день, если ребенок сонливый или плохо дышит.",
+            ],
+            "psychiatrist": [
+                "Перейдите в безопасное спокойное место и свяжитесь с доверенным человеком прямо сейчас.",
+                "Не оставайтесь одни, если есть паника, мысли о самоповреждении или сильный дистресс.",
+            ],
+            "orthopedist": [
+                "Дайте болезненной области покой и уменьшите нагрузку.",
+                "При отеке или недавней травме приложите холод на 15-20 минут.",
+            ],
+            "general practitioner": [
+                "Отдыхайте, пейте воду и наблюдайте, уменьшаются ли симптомы или усиливаются.",
+                "Запишитесь на очный осмотр, если симптомы сохраняются, распространяются или мешают есть, пить или спать.",
+            ],
+            "fever": [
+                "Пейте больше жидкости, отдыхайте и регулярно измеряйте температуру.",
+                "Обратитесь в тот же день, если температура остается высокой, держится дольше 1-2 дней или сочетается с проблемами дыхания.",
+            ],
+            "stomach": [
+                "Пейте воду маленькими глотками и пока избегайте жирной, тяжелой и острой пищи.",
+                "Обратитесь раньше, если боль становится сильной, жидкость не удерживается или рвота продолжается.",
+            ],
+        },
+        "uz": {
+            "cardiologist": [
+                "Jismoniy faollikni to'xtatib, o'tirib turing va ko'krak og'rig'i yoki yurak urishini kuzating.",
+                "Tekshiruvgacha kofein, sigaret va og'ir ovqatdan saqlaning.",
+            ],
+            "neurologist": [
+                "Tinch va qorong'i joyda dam oling, bosh aylanishi yoki karaxtlik bo'lsa mashina haydamang.",
+                "Suv iching va bosh og'rig'i, karaxtlik yoki ko'rish buzilishi kuchaysa tez yordam oling.",
+            ],
+            "dermatologist": [
+                "Joyni qashimang va terini yengil sovun hamda suv bilan ehtiyotkor tozalang.",
+                "Toshma ko'rikdan o'tmaguncha yangi krem yoki bezovta qiluvchi mahsulot surtmay turing.",
+            ],
+            "pediatrician": [
+                "Bolaning harorati, suyuqlik ichishi va holatini diqqat bilan kuzating.",
+                "Bolani suvsizlantirmang va juda lanj bo'lsa yoki nafas olishi yomonlashsa shu kunning o'zida ko'rikka olib boring.",
+            ],
+            "psychiatrist": [
+                "Xavfsiz va tinch joyga o'ting hamda ishonchli odam bilan hozir bog'laning.",
+                "Vahima, o'ziga zarar fikri yoki kuchli bezovtalik bo'lsa yolg'iz qolmang.",
+            ],
+            "orthopedist": [
+                "Og'riyotgan joyni dam oldiring va zo'riqishni kamaytiring.",
+                "Shish yoki yangi jarohat bo'lsa 15-20 daqiqa sovuq kompress qo'ying.",
+            ],
+            "back": [
+                "Hozircha og'ir ko'tarmang, qayta-qayta egilmang yoki burilmang, holatni sekin o'zgartiring.",
+                "Qotish bo'lsa iliq kompress, yangi zo'riqish yoki jarohatdan keyin esa sovuq kompress qo'llang.",
+            ],
+            "general practitioner": [
+                "Dam oling, ko'proq suyuqlik iching va belgilar kamayadimi yoki kuchayadimi kuzating.",
+                "Belgilar davom etsa, tarqalsa yoki ovqatlanish, ichish, uyquga xalaqit bersa ko'rikka boring.",
+            ],
+            "fever": [
+                "Ko'proq suyuqlik iching, dam oling va haroratni tekshirib boring.",
+                "Isitma baland bo'lib qolsa, 1-2 kundan oshsa yoki nafas bilan muammo qo'shilsa shu kunning o'zida ko'rikka boring.",
+            ],
+            "stomach": [
+                "Hozircha suvni oz-ozdan iching va yog'li, og'ir yoki achchiq ovqat yemang.",
+                "Og'riq kuchaysa, suyuqlikni ushlab turolmasangiz yoki qusish davom etsa tezroq tekshiruvdan o'ting.",
+            ],
+        },
+    }
+
+    lang = language if language in steps else "en"
+    bucket = specialty if specialty in steps[lang] else "general practitioner"
+
+    if "fever" in lowered or "temperature" in lowered or "isitma" in lowered or "темпера" in lowered:
+        bucket = "fever"
+    elif "stomach" in lowered or "abdomen" in lowered or "nausea" in lowered or "qorin" in lowered or "живот" in lowered:
+        bucket = "stomach"
+    elif "back pain" in lowered or "lower back" in lowered or "upper back" in lowered or "waist pain" in lowered or "belim" in lowered or "bel og'" in lowered or "спин" in lowered:
+        bucket = "back"
+    elif "back pain" in lowered or "lower back" in lowered or "upper back" in lowered or "waist pain" in lowered or "belim" in lowered or "bel og'" in lowered or "спин" in lowered:
+        bucket = "back"
+
+    selected = list(steps[lang].get(bucket, steps[lang]["general practitioner"]))
+
+    if urgency == "medium":
+        selected.insert(0, default_text(language, "same_day_step"))
+    elif urgency == "low":
+        selected.insert(0, default_text(language, "routine_step"))
+
+    return selected
+
+
 def normalize_specialty(raw_specialty: Optional[str]) -> str:
     if not raw_specialty:
         return "general practitioner"
@@ -684,11 +1423,15 @@ def default_text(language: str, key: str) -> str:
 
 def heuristic_triage(message: str, language: str) -> dict:
     lowered = normalize_text(message)
+    if needs_more_symptom_details(lowered):
+        return detail_request_payload(language)
+
     urgent = is_emergency(lowered)
     reason = emergency_reason(lowered)
     urgency = "high" if urgent else "low"
+    severity_score = extract_severity_score(lowered)
 
-    if not urgent and any(hint in lowered for hint in MEDIUM_URGENCY_HINTS):
+    if not urgent and (any(hint in lowered for hint in MEDIUM_URGENCY_HINTS) or (severity_score is not None and severity_score >= 7)):
         urgency = "medium"
 
     specialty = "general practitioner"
@@ -697,27 +1440,28 @@ def heuristic_triage(message: str, language: str) -> dict:
             specialty = candidate
             break
 
-    next_steps = []
-    if urgency == "high":
-        next_steps.append(default_text(language, "urgent_step"))
-    elif urgency == "medium":
-        next_steps.append(default_text(language, "same_day_step"))
-    else:
-        next_steps.append(default_text(language, "routine_step"))
+    bucket = detect_symptom_bucket(lowered, specialty)
+    specialty = BUCKET_TO_SPECIALTY.get(bucket, specialty)
 
-    follow_up_questions = [
-        default_text(language, "question_duration"),
-        default_text(language, "question_severity"),
-        default_text(language, "question_red_flags"),
-    ]
+    next_steps = symptom_specific_steps(language, specialty, lowered, urgency)
+    if urgency == "high":
+        next_steps = [default_text(language, "urgent_step"), *next_steps]
+
+    follow_up_questions = symptom_follow_up_questions(language, bucket)
+    summary = emergency_summary(language, reason) if urgent else (symptom_bucket_summary(language, bucket) or default_text(language, "fallback_summary"))
+    advice = emergency_advice(language, reason) if urgent else (symptom_bucket_advice(language, bucket, urgency) or symptom_specific_advice(language, specialty, lowered, urgency))
+    likely_condition = symptom_bucket_likely_condition(language, bucket)
 
     return {
         "urgency": urgency,
         "specialty": specialty,
-        "summary": emergency_summary(language, reason) if urgent else default_text(language, "fallback_summary"),
-        "advice": emergency_advice(language, reason) if urgent else default_text(language, "fallback_reply"),
+        "summary": summary,
+        "advice": advice,
         "next_steps": next_steps,
         "follow_up_questions": follow_up_questions,
+        "needs_more_detail": False,
+        "likely_condition": likely_condition,
+        "prevention_tips": [],
     }
 
 
@@ -1038,8 +1782,10 @@ def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
     hard_urgent = is_emergency(req.message)
     hard_urgent_reason = emergency_reason(req.message)
     triage = heuristic_triage(req.message, req.language)
+    needs_more_detail = bool(triage.get("needs_more_detail"))
 
-    specialty_extracted = normalize_specialty(triage.get("specialty"))
+    raw_specialty = triage.get("specialty")
+    specialty_extracted = "" if needs_more_detail or not raw_specialty else normalize_specialty(raw_specialty)
     urgency_level = str(triage.get("urgency", "low")).strip().lower()
     if urgency_level not in {"low", "medium", "high"}:
         urgency_level = "high" if hard_urgent else "low"
@@ -1061,37 +1807,48 @@ def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
 
     limit = 6 if req.is_premium else 2
     next_steps, follow_up_questions = apply_premium_limits(next_steps, follow_up_questions, req.is_premium)
+    likely_condition = str(triage.get("likely_condition", "")).strip()
+    if not likely_condition and specialty_extracted:
+        likely_condition = likely_condition_text(req.language, specialty_extracted, hard_urgent_reason, is_urgent)
 
-    specialty_matches = (
-        db.query(models.Doctor)
-        .filter(models.Doctor.is_authorized.is_(True))
-        .filter(models.Doctor.specialty.ilike(f"%{specialty_extracted}%"))
-        .all()
-    )
+    prevention_tips = triage.get("prevention_tips") or []
+    if not prevention_tips and specialty_extracted:
+        prevention_tips = prevention_tips_text(req.language, specialty_extracted, is_urgent)
 
-    if not specialty_matches:
+    emergency_warning = emergency_advice(req.language, hard_urgent_reason) if is_urgent else ""
+    doctors_list: List[DoctorSchema] = []
+
+    if specialty_extracted:
         specialty_matches = (
             db.query(models.Doctor)
             .filter(models.Doctor.is_authorized.is_(True))
-            .filter(models.Doctor.specialty.ilike("%general practitioner%"))
+            .filter(models.Doctor.specialty.ilike(f"%{specialty_extracted}%"))
             .all()
         )
 
-    ranked_doctors = rank_doctors(specialty_matches, specialty_extracted, urgency_level)[:limit]
+        if not specialty_matches:
+            specialty_matches = (
+                db.query(models.Doctor)
+                .filter(models.Doctor.is_authorized.is_(True))
+                .filter(models.Doctor.specialty.ilike("%general practitioner%"))
+                .all()
+            )
 
-    doctors_list = [
-        DoctorSchema(
-            id=doctor.id,
-            name=doctor.name,
-            specialty=doctor.specialty,
-            is_authorized=doctor.is_authorized,
-            rating=doctor.rating,
-            location=doctor.location,
-            distance=doctor.distance,
-            consultation_fee=doctor.consultation_fee,
-        )
-        for doctor in ranked_doctors
-    ]
+        ranked_doctors = rank_doctors(specialty_matches, specialty_extracted, urgency_level)[:limit]
+
+        doctors_list = [
+            DoctorSchema(
+                id=doctor.id,
+                name=doctor.name,
+                specialty=doctor.specialty,
+                is_authorized=doctor.is_authorized,
+                rating=doctor.rating,
+                location=doctor.location,
+                distance=doctor.distance,
+                consultation_fee=doctor.consultation_fee,
+            )
+            for doctor in ranked_doctors
+        ]
 
     reply = advice
 
@@ -1102,7 +1859,10 @@ def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
     return ChatResponse(
         reply=reply,
         summary=summary,
-        specialty=specialty_extracted,
+        likely_condition=likely_condition,
+        prevention_tips=prevention_tips,
+        emergency_warning=emergency_warning,
+        specialty=specialty_extracted or None,
         urgency_level=urgency_level,
         next_steps=next_steps,
         follow_up_questions=follow_up_questions,

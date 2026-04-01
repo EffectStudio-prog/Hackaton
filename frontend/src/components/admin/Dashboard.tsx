@@ -26,6 +26,7 @@ interface StoredMessage {
   role: 'user' | 'ai' | 'typing'
   content: string
   createdAt?: number
+  isPremium?: boolean
   summary?: string
   specialty?: string
   doctors?: { specialty?: string }[]

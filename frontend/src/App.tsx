@@ -10,12 +10,6 @@ import ConsultationPanel from './components/ConsultationPanel'
 import DoctorAuthModal from './components/DoctorAuthModal'
 import PremiumPage from './components/PremiumPage'
 
-const LANGUAGES = [
-  { code: 'en', label: 'EN', name: 'English' },
-  { code: 'ru', label: 'RU', name: 'Russian' },
-  { code: 'uz', label: 'UZ', name: "O'zbek" },
-]
-
 interface AuthUser {
   id: number
   username: string
@@ -65,6 +59,11 @@ const loadReferralState = (userId?: number): ReferralState => {
 
 function App() {
   const { t, i18n } = useTranslation()
+  const languages = [
+    { code: 'en', label: 'EN', name: t('languageEnglish') },
+    { code: 'ru', label: 'RU', name: t('languageRussian') },
+    { code: 'uz', label: 'UZ', name: t('languageUzbek') },
+  ]
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('medmap-dark') === 'true')
   const [authUser, setAuthUser] = useState<AuthUser | null>(() => {
     try {
@@ -303,7 +302,7 @@ function App() {
     ? `MYDOC-${String(authUser.id).padStart(4, '0')}`
     : 'MYDOC-GUEST'
 
-  const currentLangLabel = LANGUAGES.find(language => language.code === currentLang)?.label || 'EN'
+  const currentLangLabel = languages.find(language => language.code === currentLang)?.label || 'EN'
 
   return (
     <div className="h-full flex flex-col bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 dark:from-gray-950 dark:via-gray-900 dark:to-slate-900 transition-colors duration-300">
@@ -404,7 +403,7 @@ function App() {
                   role="menu"
                   aria-label={t('changeLanguage')}
                 >
-                  {LANGUAGES.map(language => (
+                  {languages.map(language => (
                     <button
                       key={language.code}
                       onClick={() => handleLangChange(language.code)}
@@ -461,7 +460,13 @@ function App() {
         </div>
       </header>
 
-      <main className="flex-1 overflow-hidden w-full max-w-7xl mx-auto flex flex-col px-2 sm:px-4 lg:px-6">
+      <main
+        className={`flex-1 overflow-hidden w-full flex flex-col ${
+          showAdminDashboard || showPremiumPage
+            ? 'max-w-7xl mx-auto px-2 sm:px-4 lg:px-6'
+            : 'max-w-none px-0'
+        }`}
+      >
         {showAdminDashboard ? (
           <Dashboard onBack={() => setShowAdminDashboard(false)} />
         ) : showPremiumPage ? (

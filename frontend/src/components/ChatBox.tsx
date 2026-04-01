@@ -33,6 +33,9 @@ interface Message {
   createdAt?: number
   isPremium?: boolean
   summary?: string
+  likelyCondition?: string
+  preventionTips?: string[]
+  emergencyWarning?: string
   specialty?: string
   urgency?: string
   nextSteps?: string[]
@@ -264,6 +267,9 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, language, onOpenPr
         content: data.reply,
         createdAt: Date.now(),
         summary: data.summary,
+        likelyCondition: data.likely_condition,
+        preventionTips: data.prevention_tips,
+        emergencyWarning: data.emergency_warning,
         specialty: data.specialty,
         urgency: data.urgency_level,
         nextSteps: data.next_steps,
@@ -321,7 +327,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, language, onOpenPr
           isHistoryMinimized ? 'w-[88px]' : 'w-full lg:w-72 lg:min-w-72'
         }`}
       >
-        <div className="p-3 sm:p-4 flex flex-col gap-3 h-full">
+        <div className="h-full px-2 py-3 sm:px-3 sm:py-4 flex flex-col gap-3">
           <div className={`flex ${isHistoryMinimized ? 'flex-col' : 'items-center'} gap-2`}>
             <button
               onClick={() => setIsHistoryMinimized(value => !value)}

@@ -20,6 +20,9 @@ interface Message {
   role: 'user' | 'ai' | 'typing'
   content: string
   summary?: string
+  likelyCondition?: string
+  preventionTips?: string[]
+  emergencyWarning?: string
   specialty?: string
   doctors?: Doctor[]
   urgent?: boolean
@@ -41,6 +44,53 @@ const urgencyMap: Record<string, string> = {
   high: 'urgencyHigh',
 }
 
+const normalizeText = (value?: string) =>
+  (value || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const uniqueTextList = (items?: string[]) => {
+  const seen: string[] = []
+
+  return (items || []).filter(item => {
+    const normalized = normalizeText(item)
+    if (!normalized) {
+      return false
+    }
+
+    const isDuplicate = seen.some(existing =>
+      existing === normalized ||
+      existing.includes(normalized) ||
+      normalized.includes(existing)
+    )
+
+    if (isDuplicate) {
+      return false
+    }
+
+    seen.push(normalized)
+    return true
+  })
+}
+
+const splitIntoComparableParts = (value?: string) =>
+  (value || '')
+    .split(/[.!?\n]+/)
+    .map(part => normalizeText(part))
+    .filter(Boolean)
+
+const isSimilarToAny = (value: string, comparisons: string[]) =>
+  comparisons.some(existing => {
+    if (!existing) return false
+    return (
+      existing === value ||
+      existing.includes(value) ||
+      value.includes(existing)
+    )
+  })
+
 const MessageBubble: React.FC<MessageBubbleProps> = ({
   message,
   isPremium = false,
@@ -50,6 +100,38 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
   const { t } = useTranslation()
   const isUser = message.role === 'user'
   const isTyping = message.role === 'typing'
+  const normalizedContent = normalizeText(message.content)
+  const normalizedLikelyCondition = normalizeText(message.likelyCondition)
+  const normalizedSummary = normalizeText(message.summary)
+  const normalizedEmergencyWarning = normalizeText(message.emergencyWarning)
+  const contentParts = splitIntoComparableParts(message.content)
+  const comparisonParts = uniqueTextList([
+    ...contentParts,
+    normalizedLikelyCondition,
+    normalizedSummary,
+    normalizedEmergencyWarning,
+  ])
+  const visibleLikelyCondition =
+    !!normalizedLikelyCondition &&
+    !isSimilarToAny(normalizedLikelyCondition, contentParts)
+  const visibleSummary =
+    !!normalizedSummary &&
+    !isSimilarToAny(normalizedSummary, [normalizedContent, normalizedLikelyCondition])
+  const visibleNextSteps = uniqueTextList(message.nextSteps).filter(step => {
+    const normalized = normalizeText(step)
+    return !isSimilarToAny(normalized, comparisonParts)
+  })
+  const visiblePreventionTips = uniqueTextList(message.preventionTips).filter(tip => {
+    const normalized = normalizeText(tip)
+    return !isSimilarToAny(normalized, comparisonParts)
+  })
+  const visibleFollowUpQuestions = uniqueTextList(message.followUpQuestions).filter(question => {
+    const normalized = normalizeText(question)
+    return !isSimilarToAny(normalized, comparisonParts)
+  })
+  const visibleEmergencyWarning =
+    !!normalizedEmergencyWarning &&
+    !isSimilarToAny(normalizedEmergencyWarning, [normalizedContent, normalizedLikelyCondition, normalizedSummary])
   const emergencyBubbleClass = message.urgent
     ? 'border border-red-200/80 bg-gradient-to-br from-red-50 via-white to-rose-50 shadow-2xl shadow-red-500/20 ring-2 ring-red-200/80 dark:border-red-500/30 dark:from-red-950/40 dark:via-gray-900 dark:to-rose-950/30 dark:ring-red-500/20'
     : 'glass-card'
@@ -116,7 +198,18 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
             {message.content}
           </p>
 
-          {message.summary && (
+          {visibleLikelyCondition && (
+            <div className={`mt-3 pt-3 border-t ${message.urgent ? 'border-red-200/80 dark:border-red-500/20' : 'border-gray-100 dark:border-gray-700'}`}>
+              <p className={`text-[11px] sm:text-xs font-semibold uppercase tracking-wider mb-1.5 ${message.urgent ? 'text-red-700 dark:text-red-300' : 'text-gray-500 dark:text-gray-400'}`}>
+                {t('likelyCondition', { defaultValue: 'Likely condition' })}
+              </p>
+              <p className={`text-[12px] sm:text-[13px] font-medium leading-relaxed ${message.urgent ? 'text-red-800 dark:text-red-100' : 'text-gray-700 dark:text-gray-200'}`}>
+                {message.likelyCondition}
+              </p>
+            </div>
+          )}
+
+          {visibleSummary && (
             <div className={`mt-3 pt-3 border-t ${message.urgent ? 'border-red-200/80 dark:border-red-500/20' : 'border-gray-100 dark:border-gray-700'}`}>
               <p className={`text-[11px] sm:text-xs font-semibold uppercase tracking-wider mb-1.5 ${message.urgent ? 'text-red-700 dark:text-red-300' : 'text-gray-500 dark:text-gray-400'}`}>
                 {t('caseSummary', { defaultValue: 'Quick summary' })}
@@ -127,14 +220,14 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
             </div>
           )}
 
-          {message.nextSteps && message.nextSteps.length > 0 && (
+          {visibleNextSteps.length > 0 && (
             <div className={`mt-3 sm:mt-4 pt-3 sm:pt-4 border-t ${message.urgent ? 'border-red-200/80 dark:border-red-500/20' : 'border-gray-100 dark:border-gray-700'}`}>
               <div className="rounded-2xl border border-emerald-200/80 bg-emerald-50/90 px-3 py-3 shadow-sm dark:border-emerald-800/50 dark:bg-emerald-900/20">
               <p className="text-[11px] sm:text-xs font-semibold uppercase tracking-wider mb-2 text-emerald-700 dark:text-emerald-300">
-                {t('nextSteps')}
+                {t('whatToDoNow', { defaultValue: 'What to do now' })}
               </p>
               <ul className="space-y-1.5">
-                {message.nextSteps.map((step, index) => (
+                {visibleNextSteps.map((step, index) => (
                   <li
                     key={`${message.id}-step-${index}`}
                     className="text-[13px] sm:text-sm leading-relaxed text-emerald-900 dark:text-emerald-50 font-medium"
@@ -147,13 +240,33 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
             </div>
           )}
 
-          {message.followUpQuestions && message.followUpQuestions.length > 0 && (
+          {visiblePreventionTips.length > 0 && (
+            <div className="mt-3 sm:mt-4 pt-3 sm:pt-4 border-t border-gray-100 dark:border-gray-700">
+              <div className="rounded-2xl border border-sky-200/80 bg-sky-50/90 px-3 py-3 shadow-sm dark:border-sky-800/50 dark:bg-sky-900/20">
+                <p className="text-[11px] sm:text-xs font-semibold uppercase tracking-wider mb-2 text-sky-700 dark:text-sky-300">
+                  {t('preventLater', { defaultValue: 'How to prevent this later' })}
+                </p>
+                <ul className="space-y-1.5">
+                  {visiblePreventionTips.map((tip, index) => (
+                    <li
+                      key={`${message.id}-prevention-${index}`}
+                      className="text-[13px] sm:text-sm leading-relaxed text-sky-900 dark:text-sky-50 font-medium"
+                    >
+                      {tip}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {visibleFollowUpQuestions.length > 0 && (
             <div className="mt-3 sm:mt-4 pt-3 sm:pt-4 border-t border-gray-100 dark:border-gray-700">
               <p className="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
                 {t('followUpQuestions')}
               </p>
               <ul className="space-y-1.5">
-                {message.followUpQuestions.map((question, index) => (
+                {visibleFollowUpQuestions.map((question, index) => (
                   <li
                     key={`${message.id}-question-${index}`}
                     className="text-[13px] sm:text-sm text-gray-700 dark:text-gray-200 leading-relaxed"
@@ -167,6 +280,16 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
 
           {message.urgent && (
             <div className="mt-3 sm:mt-4 space-y-2">
+              {visibleEmergencyWarning && (
+                <div className="rounded-xl border border-red-200 bg-red-50/80 px-3 py-3 dark:border-red-700/40 dark:bg-red-500/10">
+                  <p className="text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-red-700 dark:text-red-300 mb-1.5">
+                    {t('emergencyWarning', { defaultValue: 'Emergency warning if needed' })}
+                  </p>
+                  <p className="text-[12px] sm:text-sm leading-5 text-red-800 dark:text-red-100">
+                    {message.emergencyWarning}
+                  </p>
+                </div>
+              )}
               {!isPremium && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-3 dark:border-amber-700/40 dark:bg-amber-500/10">
                   <div className="flex items-start gap-2">
@@ -196,7 +319,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
         {message.doctors && message.doctors.length > 0 && (
           <div className="space-y-2">
             <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">
-              {t('doctorsFound')}
+              {t('recommendedDoctor', { defaultValue: 'Recommended doctor' })}
             </p>
             {message.doctors.map((doctor, index) => (
               <DoctorCard
