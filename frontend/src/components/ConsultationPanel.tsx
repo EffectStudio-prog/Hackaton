@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { LoaderCircle, MessageCircle, Send, Stethoscope, X } from 'lucide-react'
 
+import { apiFetch } from '../utils/api'
+
 interface ConsultationMessage {
   id: number
   sender_type: 'user' | 'doctor'
@@ -52,7 +54,7 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
   const [isBusy, setIsBusy] = useState(false)
 
   const fetchConsultation = useCallback(async (consultationId: number) => {
-    const response = await fetch(`/consultations/${consultationId}?actor_type=${actorType}&actor_id=${actorId}`)
+    const response = await apiFetch(`/consultations/${consultationId}?actor_type=${actorType}&actor_id=${actorId}`)
     const data = await response.json().catch(() => ({}))
     if (!response.ok) {
       throw new Error(data?.detail ?? t('consultationLoadError'))
@@ -61,7 +63,7 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
   }, [actorId, actorType, t])
 
   const loadDoctorConsultations = useCallback(async () => {
-    const response = await fetch(`/doctor-consultations?doctor_id=${actorId}`)
+    const response = await apiFetch(`/doctor-consultations?doctor_id=${actorId}`)
     const data = await response.json().catch(() => ([]))
     if (!response.ok) {
       throw new Error(t('consultationLoadError'))
@@ -122,7 +124,7 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
     setError('')
 
     try {
-      const response = await fetch(`/consultations/${selectedConsultationId}/messages`, {
+      const response = await apiFetch(`/consultations/${selectedConsultationId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

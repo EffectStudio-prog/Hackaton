@@ -1,0 +1,17 @@
+image: node:20
+
+pages:
+  stage: deploy
+  variables:
+    VITE_API_BASE_URL: $VITE_API_BASE_URL
+  script:
+    - cd frontend
+    - npm ci
+    - npm run build
+    - mkdir -p ../public
+    - cp -r dist/* ../public/
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

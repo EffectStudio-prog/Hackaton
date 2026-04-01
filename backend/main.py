@@ -241,7 +241,7 @@ EMERGENCY_KEYWORDS = [
     "seizure", "passed out", "severe bleeding",
     "боль в груди", "инфаркт", "трудно дышать", "не могу дышать",
     "кровотечение", "инсульт", "потерял сознание", "судороги",
-    "ko'krak og'rig'i", "nafas ololmayapman", "qon ketyapti",
+    "ko'krak og'rig'i", "ko'kragim og'riyapti", "nafas ololmayapman", "nafasim qisilyapti", "qon ketyapti",
     "hushini yo'qotdi", "talvasa", "insult",
 ]
 
@@ -250,13 +250,13 @@ EMERGENCY_PATTERNS = {
         "can't breathe", "cannot breathe", "not breathing", "difficulty breathing",
         "shortness of breath", "gasping", "turning blue", "choking",
         "не могу дышать", "трудно дышать", "не дышит", "задыхаюсь",
-        "nafas ololmayapman", "nafas qisilishi", "bo'g'ilib qoldi",
+        "nafas ololmayapman", "nafas qisilishi", "nafasim qisilyapti", "nafasim qisildi", "bo'g'ilib qoldi",
     ],
     "cardiac": [
         "chest pain", "heart attack", "pressure in chest", "crushing chest pain",
         "pain spreading to arm", "jaw pain with chest pain",
         "боль в груди", "инфаркт", "давит в груди",
-        "ko'krak og'rig'i", "yurak xuruji",
+        "ko'krak og'rig'i", "ko'kragim og'riyapti", "yurak xuruji",
     ],
     "stroke": [
         "stroke", "face drooping", "slurred speech", "one sided weakness",
@@ -325,7 +325,7 @@ GENERAL_SYMPTOM_HINTS = [
     "back", "joint", "throat", "runny nose", "sore throat", "fatigue", "tired",
     "og'ri", "isitma", "yo'tal", "shamoll", "tomoq", "ko'ngil ayn", "qus",
     "ich ket", "nafas", "bosh", "karaxt", "toshma", "qich", "qorin", "oshqozon",
-    "bel", "bo'g'im", "siydik", "holsiz", "charch", "yurak", "ko'krak",
+    "bel", "bo'g'im", "siydik", "siyganda", "achish", "holsiz", "charch", "yurak", "ko'krak",
 ]
 
 VAGUE_INPUT_HINTS = [
@@ -337,7 +337,7 @@ VAGUE_INPUT_HINTS = [
 SYMPTOM_BUCKET_HINTS = {
     "cardiac": [
         "chest pain", "pressure in chest", "palpitations", "rapid heartbeat", "heart",
-        "ko'krak", "yurak",
+        "ko'krak", "ko'krag", "yurak",
     ],
     "headache": [
         "headache", "migraine", "dizziness", "numbness", "vision loss", "confusion",
@@ -365,7 +365,7 @@ SYMPTOM_BUCKET_HINTS = {
     ],
     "urinary": [
         "urine", "urination", "burning when i pee", "pain when i pee", "frequent urination",
-        "bladder", "siydik", "tez-tez siyish", "achishish",
+        "bladder", "siydik", "siyganda", "siyish", "tez-tez siyish", "achish", "achishish",
     ],
     "cold_flu": [
         "cold", "flu", "cough", "runny nose", "sore throat", "congestion", "sneezing",
@@ -425,6 +425,90 @@ def extract_severity_score(lowered: str) -> Optional[int]:
     if match:
         return int(match.group(1))
     return None
+
+
+def extract_duration_category(lowered: str) -> Optional[str]:
+    if re.search(r"\b\d+\s*(month|months|year|years|oy|oydan|yil|yildan)\b", lowered):
+        return "long"
+    if re.search(r"\b\d+\s*(week|weeks|hafta|haftadan)\b", lowered):
+        return "weeks"
+    if re.search(r"\b\d+\s*(day|days|kun|kundan)\b", lowered):
+        return "days"
+
+    if contains_any(lowered, ["month", "months", "year", "years", "oy", "yil"]):
+        return "long"
+    if contains_any(lowered, ["week", "weeks", "hafta"]):
+        return "weeks"
+    if contains_any(lowered, ["day", "days", "today", "yesterday", "kun", "bugun", "kecha"]):
+        return "days"
+    return None
+
+
+def extract_severity_level(lowered: str, score: Optional[int], urgency: str) -> Optional[str]:
+    severe_hints = [
+        "severe", "intense", "worst", "unbearable", "qattiq", "kuchli", "chidab bo'lmaydi",
+        "сил", "сильн", "резк",
+    ]
+    mild_hints = [
+        "mild", "slight", "light", "yengil", "biroz", "ozroq", "небольш",
+    ]
+
+    if score is not None:
+        if score >= 8:
+            return "severe"
+        if score >= 4:
+            return "moderate"
+        return "mild"
+
+    if contains_any(lowered, severe_hints) or urgency == "high":
+        return "severe"
+    if urgency == "medium":
+        return "moderate"
+    if contains_any(lowered, mild_hints):
+        return "mild"
+    return None
+
+
+def contextualize_summary(language: str, base_summary: str, severity_level: Optional[str], duration_category: Optional[str]) -> str:
+    extras = {
+        "en": {
+            "severity": {
+                "mild": "The description sounds milder right now.",
+                "moderate": "The description suggests a moderate level of symptoms.",
+                "severe": "The description suggests stronger symptoms.",
+            },
+            "duration": {
+                "days": "It also sounds like this has been going on for at least part of the day or several days.",
+                "weeks": "It also sounds like this has been going on for weeks.",
+                "long": "It also sounds like this has been ongoing for a longer time.",
+            },
+        },
+        "uz": {
+            "severity": {
+                "mild": "Ta'rifga ko'ra belgi hozircha yengilroq ko'rinadi.",
+                "moderate": "Ta'rifga ko'ra belgi o'rtacha darajada ko'rinadi.",
+                "severe": "Ta'rifga ko'ra belgi kuchliroq ko'rinadi.",
+            },
+            "duration": {
+                "days": "Bu kamida bir necha soat yoki bir necha kundan beri davom etayotganga o'xshaydi.",
+                "weeks": "Bu bir necha haftadan beri davom etayotganga o'xshaydi.",
+                "long": "Bu ancha uzoq davom etayotgan holatga o'xshaydi.",
+            },
+        },
+    }
+
+    lang = language if language in extras else "en"
+    parts = [base_summary.strip()]
+
+    severity_text = extras[lang]["severity"].get(severity_level or "", "")
+    duration_text = extras[lang]["duration"].get(duration_category or "", "")
+
+    if severity_text:
+        parts.append(severity_text)
+    if duration_text:
+        parts.append(duration_text)
+
+    return " ".join(part for part in parts if part).strip()
 
 
 def detect_symptom_bucket(lowered: str, specialty: str) -> str:
@@ -1430,6 +1514,7 @@ def heuristic_triage(message: str, language: str) -> dict:
     reason = emergency_reason(lowered)
     urgency = "high" if urgent else "low"
     severity_score = extract_severity_score(lowered)
+    duration_category = extract_duration_category(lowered)
 
     if not urgent and (any(hint in lowered for hint in MEDIUM_URGENCY_HINTS) or (severity_score is not None and severity_score >= 7)):
         urgency = "medium"
@@ -1448,7 +1533,13 @@ def heuristic_triage(message: str, language: str) -> dict:
         next_steps = [default_text(language, "urgent_step"), *next_steps]
 
     follow_up_questions = symptom_follow_up_questions(language, bucket)
-    summary = emergency_summary(language, reason) if urgent else (symptom_bucket_summary(language, bucket) or default_text(language, "fallback_summary"))
+    severity_level = extract_severity_level(lowered, severity_score, urgency)
+    summary = emergency_summary(language, reason) if urgent else contextualize_summary(
+        language,
+        symptom_bucket_summary(language, bucket) or default_text(language, "fallback_summary"),
+        severity_level,
+        duration_category,
+    )
     advice = emergency_advice(language, reason) if urgent else (symptom_bucket_advice(language, bucket, urgency) or symptom_specific_advice(language, specialty, lowered, urgency))
     likely_condition = symptom_bucket_likely_condition(language, bucket)
 
