@@ -1,0 +1,158 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    overflow: hidden;
+  }
+
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow: hidden;
+  }
+
+  /* Hide scrollbars globally but keep scroll behavior */
+  * {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  *::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-white/70 dark:bg-gray-800/70 backdrop-blur-md border border-white/40 dark:border-gray-700/60 rounded-2xl shadow-xl shadow-slate-200/60 dark:shadow-none;
+  }
+
+  .btn-primary {
+    @apply bg-brand-600 hover:bg-brand-700 text-white font-semibold px-5 py-2.5 rounded-xl transition-all duration-200 active:scale-95 shadow-md shadow-brand-500/20 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/60;
+  }
+
+  .btn-ghost {
+    @apply bg-transparent hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 font-medium px-3 py-2 rounded-lg transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/40;
+  }
+
+  .input-field {
+    @apply w-full bg-white/90 dark:bg-gray-900/80 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 border border-gray-200/80 dark:border-gray-700/80 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-brand-500/60 focus:border-transparent transition-all duration-200 resize-none shadow-[0_1px_0_rgba(255,255,255,0.35)_inset];
+  }
+
+  .select-field {
+    @apply w-full appearance-none rounded-2xl border border-slate-200/80 bg-white/85 px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition focus:border-brand-400 focus:ring-2 focus:ring-brand-200 dark:border-slate-700/80 dark:bg-slate-900/75 dark:text-slate-200 dark:focus:ring-brand-900/40;
+    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+      linear-gradient(135deg, currentColor 50%, transparent 50%),
+      linear-gradient(to right, transparent, transparent);
+    background-position: calc(100% - 1.25rem) calc(1rem + 2px), calc(100% - 1rem) calc(1rem + 2px), 0 0;
+    background-size: 6px 6px, 6px 6px, 100% 100%;
+    background-repeat: no-repeat;
+    color-scheme: light;
+  }
+
+  .dark .select-field {
+    color-scheme: dark;
+  }
+
+  .select-field:focus {
+    color: #0f172a;
+  }
+
+  .select-field option {
+    @apply bg-white text-slate-900;
+  }
+
+  .dark .select-field option {
+    @apply bg-slate-900 text-white;
+  }
+
+  .dot {
+    @apply w-2 h-2 rounded-full bg-brand-400 inline-block;
+    animation: pulseDot 1.4s infinite ease-in-out;
+  }
+  .dot:nth-child(2) { animation-delay: 0.2s; }
+  .dot:nth-child(3) { animation-delay: 0.4s; }
+}
+
+@media (max-width: 767px) {
+  html {
+    font-size: 15px;
+  }
+
+  body {
+    overflow: hidden;
+  }
+
+  header {
+    padding-top: max(0.75rem, env(safe-area-inset-top));
+  }
+
+  main {
+    min-height: 0;
+  }
+
+  .glass-card {
+    border-radius: 1.125rem;
+    backdrop-filter: blur(14px);
+  }
+
+  #lang-toggle,
+  #premium-toggle,
+  #dark-mode-toggle {
+    min-height: 2.5rem;
+  }
+
+  #chat-input {
+    font-size: 16px;
+    line-height: 1.45;
+  }
+
+  #send-button {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  [href^="tel:"],
+  a[href*="maps"],
+  button {
+    touch-action: manipulation;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  html {
+    font-size: 15.5px;
+  }
+
+  header > div,
+  main {
+    max-width: 72rem;
+  }
+
+  .glass-card {
+    border-radius: 1.25rem;
+  }
+
+  #chat-input {
+    min-height: 3.25rem;
+  }
+
+  #send-button {
+    width: 3rem;
+    height: 3rem;
+  }
+}
