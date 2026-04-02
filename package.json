@@ -1,0 +1,6 @@
+{
+  "scripts": {
+    "build": "npm --prefix frontend run build",
+    "deploy": "npm run build && powershell -ExecutionPolicy Bypass -File ./scripts/deploy-pages.ps1"
+  }
+}

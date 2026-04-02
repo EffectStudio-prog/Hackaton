@@ -13,7 +13,8 @@ const apiRoutes = [
   '/premium',
 ]
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  base: command === 'build' ? '/Hackaton/' : '/',
   plugins: [react()],
   server: {
     port: 5173,
@@ -27,4 +28,4 @@ export default defineConfig({
       ])
     ),
   }
-})
+}))

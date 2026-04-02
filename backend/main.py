@@ -340,11 +340,12 @@ FACILITY_CATALOG = {
 SPECIALTY_HINTS = {
     "cardiologist": [
         "chest pain", "pressure in chest", "palpitations", "rapid heartbeat",
-        "heart", "ko'krak", "болит сердце", "боль в груди", "yurak",
+        "heart", "ko'krak", "болит сердце", "боль в груди", "сердце", "yurak",
     ],
     "neurologist": [
         "headache", "migraine", "dizziness", "numbness", "seizure",
-        "vision loss", "confusion", "stroke", "голов", "онем", "bosh", "boshim", "kalla", "kallam",
+        "vision loss", "confusion", "stroke", "голов", "головная боль", "мигрень",
+        "онем", "bosh", "boshim", "kalla", "kallam",
     ],
     "dermatologist": [
         "rash", "itching", "itchy", "hives", "skin", "eczema",
@@ -452,7 +453,8 @@ MEDIUM_URGENCY_HINTS = [
     "high fever", "vomiting", "severe headache", "dehydration", "infection",
     "persistent pain", "worsening", "can't sleep from pain", "can't eat",
     "cannot eat", "can't keep fluids", "rash with fever", "migraine",
-    "высокая температура", "рвота", "сильная боль", "ухудшается",
+    "высокая температура", "рвота", "сильная боль", "сильная головная боль",
+    "ухудшается", "тошнота",
     "isitma", "qusish", "qattiq og'riq", "yomonlashyapti", "qattiq", "kuchli",
     "qus", "kuchayayapti", "zo'rayapti", "chidab bo'lmaydi",
 ]
@@ -466,6 +468,8 @@ GENERAL_SYMPTOM_HINTS = [
     "og'ri", "isitma", "yo'tal", "shamoll", "tomoq", "ko'ngil ayn", "qus",
     "ich ket", "nafas", "bosh", "karaxt", "toshma", "qich", "qorin", "oshqozon",
     "bel", "bo'g'im", "siydik", "holsiz", "charch", "yurak", "ko'krak",
+    "боль", "голов", "головная боль", "тошнота", "рвота", "температура", "кашель",
+    "живот", "сыпь", "слабость", "головокружение", "дых", "груд",
 ]
 
 VAGUE_INPUT_HINTS = [
@@ -477,42 +481,47 @@ VAGUE_INPUT_HINTS = [
 SYMPTOM_BUCKET_HINTS = {
     "cardiac": [
         "chest pain", "pressure in chest", "palpitations", "rapid heartbeat", "heart",
-        "ko'krak", "yurak",
+        "ko'krak", "yurak", "боль в груди", "сердце",
     ],
     "headache": [
         "headache", "migraine", "dizziness", "numbness", "vision loss", "confusion",
-        "bosh", "kalla", "karaxt", "ko'rish",
+        "bosh", "kalla", "karaxt", "ko'rish", "голов", "головная боль", "мигрень",
+        "головокружение", "онем",
     ],
     "skin": [
         "rash", "itch", "itching", "itchy", "hives", "skin", "eczema", "acne",
-        "toshma", "qich", "teri",
+        "toshma", "qich", "teri", "сыпь", "кожа", "зуд",
     ],
     "child": [
         "child", "baby", "infant", "toddler", "daughter", "son", "farzand",
-        "bola", "chaqaloq",
+        "bola", "chaqaloq", "ребен", "ребён", "малыш",
     ],
     "mental_health": [
         "panic", "anxiety", "depressed", "depression", "self harm", "can't sleep",
-        "stress", "vahima", "xavotir", "tushkun", "uyqu yo'q",
+        "stress", "vahima", "xavotir", "tushkun", "uyqu yo'q", "паника", "тревога",
+        "депресс", "не хочу жить",
     ],
     "back": [
         "back pain", "joint", "ankle", "fracture", "sprain", "knee", "bone", "neck pain",
-        "bel", "belim", "bo'g'im", "oyoq", "suyak", "jarohat",
+        "bel", "belim", "bo'g'im", "oyoq", "suyak", "jarohat", "спина", "сустав", "перелом",
     ],
     "stomach": [
         "stomach", "abdomen", "nausea", "vomit", "vomiting", "diarrhea", "constipation",
         "abdominal", "qorin", "oshqozon", "ko'ngil ayn", "qus", "ich ket", "ich qot",
+        "живот", "тошнота", "рвота", "диарея",
     ],
     "urinary": [
         "urine", "urination", "burning when i pee", "pain when i pee", "frequent urination",
-        "bladder", "siydik", "tez-tez siyish", "achishish",
+        "bladder", "siydik", "tez-tez siyish", "achishish", "моч", "частое мочеиспускание",
     ],
     "cold_flu": [
         "cold", "flu", "cough", "runny nose", "sore throat", "congestion", "sneezing",
-        "shamoll", "gripp", "yo'tal", "burun oq", "tomoq", "tumov",
+        "shamoll", "gripp", "yo'tal", "burun oq", "tomoq", "tumov", "кашель", "простуд",
+        "горло", "насморк",
     ],
     "fever": [
         "fever", "temperature", "high temp", "hot body", "isitma", "harorat",
+        "температура", "жар", "лихорадка",
     ],
 }
 
