@@ -1,30 +1,24 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-const backendTarget = 'http://localhost:8000'
-const apiRoutes = [
-  '/chat',
-  '/predict',
-  '/consultations',
-  '/doctor-consultations',
-  '/doctor-auth',
-  '/doctors',
-  '/auth',
-  '/premium',
-]
-
 export default defineConfig({
+  base: './',
   plugins: [react()],
   server: {
     port: 5173,
-    proxy: Object.fromEntries(
-      apiRoutes.map(route => [
-        route,
-        {
-          target: backendTarget,
-          changeOrigin: true,
-        },
-      ])
-    ),
+    proxy: {
+      '/chat': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/consultations': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/doctor-consultations': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+    }
   }
 })

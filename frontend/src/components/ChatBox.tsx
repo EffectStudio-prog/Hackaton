@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
-  ChevronDown,
   Crown,
   History,
   MapPin,
@@ -10,13 +9,12 @@ import {
   PanelLeftOpen,
   Send,
   Stethoscope,
-  Trash2,
 } from 'lucide-react'
 
 import ConsultationPanel from './ConsultationPanel'
 import MessageBubble from './MessageBubble'
 import PremiumMapPage from './PremiumMapPage'
-import { ensureLocalConsultation } from '../utils/doctorPortal'
+import { apiFetch } from '../utils/api'
 import { buildNearbyHospitalsMapUrl, requestCurrentPosition } from '../utils/maps'
 
 interface Doctor {
@@ -27,18 +25,6 @@ interface Doctor {
   location: string
   distance: number
   consultation_fee?: number
-}
-
-interface Facility {
-  id: number
-  name: string
-  facility_type: string
-  specialty_focus: string
-  rating: number
-  location: string
-  distance: number
-  reservation_fee: number
-  description?: string
 }
 
 interface Message {
@@ -56,8 +42,6 @@ interface Message {
   nextSteps?: string[]
   followUpQuestions?: string[]
   doctors?: Doctor[]
-  clinics?: Facility[]
-  hospitals?: Facility[]
   urgent?: boolean
 }
 
@@ -67,15 +51,11 @@ interface Conversation {
   preview: string
   updatedAt: number
   messages: Message[]
-  ownerUserId?: number | null
-  ownerUsername?: string
-  ownerEmail?: string
 }
 
 interface ChatBoxProps {
   isPremium: boolean
   userId?: number
-  userLabel?: string
   language: string
   onOpenPremium: () => void
   onRequireAuth: () => void
@@ -83,18 +63,6 @@ interface ChatBoxProps {
 
 const CHAT_HISTORY_KEY = 'mydoctor-chat-history'
 const CHAT_HISTORY_MINIMIZED_KEY = 'mydoctor-chat-history-minimized'
-const LOCAL_DOCTOR_KEY = 'mydoctor-local-doctors'
-const LOCAL_DOCTOR_RECOMMENDATION_LIMIT = 6
-const PATIENT_SESSION_KEY = 'mydoctor-patient-session'
-
-interface StoredDoctorRecord {
-  id: number
-  name: string
-  email: string
-  specialty: string
-  location: string
-  is_authorized: boolean
-}
 
 const SUGGESTIONS: Record<string, string[]> = {
   en: [
@@ -122,58 +90,6 @@ const genId = () => Math.random().toString(36).substring(2, 10)
 const sortConversations = (conversations: Conversation[]) =>
   [...conversations].sort((left, right) => right.updatedAt - left.updatedAt)
 
-const normalizeText = (value?: string | null) => (value ?? '').trim().toLowerCase()
-
-const loadLocalDoctors = (): StoredDoctorRecord[] => {
-  try {
-    const raw = localStorage.getItem(LOCAL_DOCTOR_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
-}
-
-const buildLocalDoctorRecommendations = (specialty?: string): Doctor[] => {
-  const requestedSpecialty = normalizeText(specialty)
-  const registeredDoctors = loadLocalDoctors()
-
-  const mappedDoctors = registeredDoctors.map((doctor, index) => ({
-    id: doctor.id,
-    name: doctor.name,
-    specialty: doctor.specialty,
-    rating: doctor.is_authorized ? 4.9 : 4.7,
-    location: doctor.location,
-    distance: Number((0.6 + index * 0.4).toFixed(1)),
-    consultation_fee: doctor.is_authorized ? 120000 : 90000,
-  }))
-
-  const matchingDoctors = requestedSpecialty
-    ? mappedDoctors.filter(doctor => normalizeText(doctor.specialty).includes(requestedSpecialty))
-    : mappedDoctors
-
-  const fallbackDoctors = mappedDoctors.filter(
-    doctor => !matchingDoctors.some(match => match.id === doctor.id)
-  )
-
-  return matchingDoctors.concat(fallbackDoctors).slice(0, LOCAL_DOCTOR_RECOMMENDATION_LIMIT)
-}
-
-const mergeDoctorRecommendations = (primaryDoctors: Doctor[] = [], localDoctors: Doctor[] = [], isPremiumUser = false) => {
-  const merged: Doctor[] = []
-  const seenDoctorKeys = new Set<string>()
-
-  for (const doctor of [...localDoctors, ...primaryDoctors]) {
-    const key = `${normalizeText(doctor.name)}|${normalizeText(doctor.specialty)}|${normalizeText(doctor.location)}`
-    if (seenDoctorKeys.has(key)) continue
-    seenDoctorKeys.add(key)
-    merged.push(doctor)
-  }
-
-  return merged.slice(0, isPremiumUser ? 6 : 3)
-}
-
 const loadStoredConversations = (): Conversation[] => {
   try {
     const raw = localStorage.getItem(CHAT_HISTORY_KEY)
@@ -186,19 +102,7 @@ const loadStoredConversations = (): Conversation[] => {
   }
 }
 
-const loadPatientSessionKey = () => {
-  try {
-    const existing = localStorage.getItem(PATIENT_SESSION_KEY)
-    if (existing) return existing
-    const next = `guest-${Math.random().toString(36).slice(2, 10)}`
-    localStorage.setItem(PATIENT_SESSION_KEY, next)
-    return next
-  } catch {
-    return `guest-${Math.random().toString(36).slice(2, 10)}`
-  }
-}
-
-const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, language, onOpenPremium, onRequireAuth }) => {
+const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, language, onOpenPremium, onRequireAuth }) => {
   const { t, i18n } = useTranslation()
   const [conversations, setConversations] = useState<Conversation[]>(() => loadStoredConversations())
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(() => loadStoredConversations()[0]?.id ?? null)
@@ -209,15 +113,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
   const [mapError, setMapError] = useState('')
   const [mapIframeUrl, setMapIframeUrl] = useState('')
   const [isHistoryMinimized, setIsHistoryMinimized] = useState(() => localStorage.getItem(CHAT_HISTORY_MINIMIZED_KEY) === 'true')
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
-  const [patientSessionKey] = useState(() => loadPatientSessionKey())
-  const [consultationState, setConsultationState] = useState<{
-    target: { id: number; name: string; specialty: string }
-    consultationId: number | null
-    demoMode: boolean
-    patientLabel?: string
-  } | null>(null)
-  const messagesContainerRef = useRef<HTMLDivElement>(null)
+  const [consultationState, setConsultationState] = useState<{ doctor: Doctor; consultationId: number } | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -232,20 +128,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
-
-  useEffect(() => {
-    const element = messagesContainerRef.current
-    if (!element) return
-
-    const handleScroll = () => {
-      const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight
-      setShowScrollToBottom(distanceFromBottom > 160)
-    }
-
-    handleScroll()
-    element.addEventListener('scroll', handleScroll)
-    return () => element.removeEventListener('scroll', handleScroll)
-  }, [messages.length, consultationState, mapIframeUrl])
 
   useEffect(() => {
     const element = textareaRef.current
@@ -277,16 +159,13 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
       preview: lastMessage.slice(0, 72),
       updatedAt: Date.now(),
       messages: persistedMessages,
-      ownerUserId: userId ?? null,
-      ownerUsername: userLabel || undefined,
-      ownerEmail: userLabel?.includes('@') ? userLabel : undefined,
     }
 
     setConversations(previous => {
       const filtered = previous.filter(conversation => conversation.id !== conversationId)
       return sortConversations([nextConversation, ...filtered])
     })
-  }, [t, userId, userLabel])
+  }, [t])
 
   const handleStartNewChat = () => {
     if (isLoading) return
@@ -303,24 +182,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
     setMapIframeUrl('')
     setMapError('')
   }
-
-  const handleDeleteConversation = useCallback((conversationId: string) => {
-    if (isLoading) return
-
-    setConversations(previous => {
-      const remaining = previous.filter(conversation => conversation.id !== conversationId)
-
-      if (currentConversationId === conversationId) {
-        const nextConversationId = remaining[0]?.id ?? null
-        setCurrentConversationId(nextConversationId)
-        setMessages(remaining[0]?.messages ?? [])
-        setMapIframeUrl('')
-        setMapError('')
-      }
-
-      return remaining
-    })
-  }, [currentConversationId, isLoading])
 
   const openPremiumHospitalsMap = useCallback(async () => {
     try {
@@ -341,39 +202,32 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
   }, [t])
 
   const openDoctorConsultation = useCallback(async (doctor: Doctor) => {
-    const nextPatientLabel = userLabel || t('callCenterPatientLabel', { defaultValue: 'Call center visitor' })
-    const patientKey = userId ? `user-${userId}` : patientSessionKey
-    const consultation = ensureLocalConsultation({
-      doctor: {
-        id: doctor.id,
-        name: doctor.name,
-        specialty: doctor.specialty,
-      },
-      userId: userId ?? 0,
-      patientKey,
-      patientLabel: nextPatientLabel,
-    })
+    if (!userId) {
+      onRequireAuth()
+      return
+    }
 
-    setConsultationState({
-      target: { id: doctor.id, name: doctor.name, specialty: doctor.specialty },
-      consultationId: consultation.id,
-      demoMode: false,
-      patientLabel: nextPatientLabel,
-    })
-  }, [patientSessionKey, t, userId, userLabel])
+    try {
+      const response = await apiFetch('/consultations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: userId,
+          doctor_id: doctor.id,
+        }),
+      })
 
-  const openFacilityCallCenter = useCallback((facility: Facility) => {
-    setConsultationState({
-      target: {
-        id: facility.id,
-        name: `${facility.name} ${t('callCenterLabel', { defaultValue: 'Call center' })}`,
-        specialty: facility.specialty_focus,
-      },
-      consultationId: null,
-      demoMode: true,
-      patientLabel: t('callCenterPatientLabel', { defaultValue: 'Call center visitor' }),
-    })
-  }, [t])
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data?.detail ?? t('consultationCreateError'))
+      }
+
+      setConsultationState({ doctor, consultationId: data.id })
+    } catch (error) {
+      const errText = error instanceof Error ? error.message : t('consultationCreateError')
+      window.alert(errText)
+    }
+  }, [onRequireAuth, t, userId])
 
   const sendMessage = useCallback(async (text: string) => {
     const trimmed = text.trim()
@@ -391,7 +245,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
     setIsLoading(true)
 
     try {
-      const response = await fetch('/chat', {
+      const response = await apiFetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -408,11 +262,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
       }
 
       const data = await response.json()
-      const mergedDoctors = mergeDoctorRecommendations(
-        data.doctors,
-        buildLocalDoctorRecommendations(data.specialty),
-        isPremium
-      )
       const aiMsg: Message = {
         id: genId(),
         role: 'ai',
@@ -426,9 +275,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
         urgency: data.urgency_level,
         nextSteps: data.next_steps,
         followUpQuestions: data.follow_up_questions,
-        doctors: mergedDoctors,
-        clinics: data.clinics,
-        hospitals: data.hospitals,
+        doctors: data.doctors,
         urgent: data.urgent,
       }
 
@@ -458,15 +305,9 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
     }
   }
 
-  const scrollToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [])
-
   const lang = i18n.language?.split('-')[0] || 'en'
   const suggestions = SUGGESTIONS[lang] ?? SUGGESTIONS.en
   const showWelcome = messages.length === 0 && !currentConversationId
-  const reservationUserKey = userId ? `user-${userId}` : patientSessionKey
-  const reservationUserLabel = userLabel || t('callCenterPatientLabel', { defaultValue: 'Call center visitor' })
 
   const formattedConversations = useMemo(
     () =>
@@ -481,33 +322,33 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
   )
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden lg:flex-row">
+    <div className="flex flex-1 overflow-hidden">
       <aside
         className={`border-b lg:border-b-0 lg:border-r border-white/50 dark:border-gray-700/50 bg-white/35 dark:bg-gray-900/35 backdrop-blur-sm flex-shrink-0 transition-all duration-200 ${
-          isHistoryMinimized ? 'w-full lg:w-[88px]' : 'w-full lg:w-72 lg:min-w-72'
+          isHistoryMinimized ? 'w-[88px]' : 'w-full lg:w-72 lg:min-w-72'
         }`}
       >
         <div className="h-full px-2 py-3 sm:px-3 sm:py-4 flex flex-col gap-3">
-          <div className={`flex items-center ${isHistoryMinimized ? 'justify-between lg:flex-col' : ''} gap-2`}>
+          <div className={`flex ${isHistoryMinimized ? 'flex-col' : 'items-center'} gap-2`}>
             <button
               onClick={() => setIsHistoryMinimized(value => !value)}
               className="btn-ghost inline-flex items-center justify-center gap-2"
               title={isHistoryMinimized ? t('maximizePanel', { defaultValue: 'Maximize' }) : t('minimizePanel', { defaultValue: 'Minimal' })}
             >
               {isHistoryMinimized ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
-              {!isHistoryMinimized && <span className="hidden sm:inline">{t('minimizePanel', { defaultValue: 'Minimal' })}</span>}
+              {!isHistoryMinimized && <span>{t('minimizePanel', { defaultValue: 'Minimal' })}</span>}
             </button>
 
             <button
               onClick={handleStartNewChat}
               disabled={isLoading}
               className={`inline-flex items-center justify-center gap-2 rounded-xl bg-brand-600 hover:bg-brand-700 disabled:opacity-60 text-white px-4 py-3 text-sm font-semibold transition-colors ${
-                isHistoryMinimized ? 'w-auto lg:w-full px-4 lg:px-0' : 'flex-1'
+                isHistoryMinimized ? 'w-full px-0' : 'flex-1'
               }`}
               title={t('newChat')}
             >
               <MessageSquarePlus className="w-4 h-4" />
-              <span className={isHistoryMinimized ? 'lg:hidden' : ''}>{t('newChat')}</span>
+              {!isHistoryMinimized && <span>{t('newChat')}</span>}
             </button>
           </div>
 
@@ -518,51 +359,47 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
             </div>
           )}
 
-          {!isHistoryMinimized && (
-            <div className="flex gap-2 overflow-x-auto lg:flex-col lg:overflow-y-auto lg:overflow-x-hidden pb-1">
-              {formattedConversations.length === 0 ? (
+          <div className="flex gap-2 overflow-x-auto lg:flex-col lg:overflow-y-auto lg:overflow-x-hidden pb-1">
+            {formattedConversations.length === 0 ? (
+              isHistoryMinimized ? (
+                <div className="glass-card w-full p-3 flex items-center justify-center">
+                  <History className="w-4 h-4 text-gray-400" />
+                </div>
+              ) : (
                 <div className="glass-card p-3 text-xs leading-6 text-gray-500 dark:text-gray-400">
                   {t('historyEmpty')}
                 </div>
-              ) : (
-                formattedConversations.map(conversation => (
-                  <div
-                    key={conversation.id}
-                    className={`min-w-[220px] sm:min-w-[260px] lg:min-w-0 rounded-2xl transition-all border ${
-                      currentConversationId === conversation.id
-                        ? 'bg-brand-50 border-brand-200 text-brand-800 dark:bg-brand-900/20 dark:border-brand-700 dark:text-brand-100'
-                        : 'bg-white/60 border-white/50 text-gray-700 hover:bg-white dark:bg-gray-900/50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-900'
-                    }`}
-                  >
-                    <div className="flex items-start gap-2 p-3">
-                      <button
-                        onClick={() => handleSelectConversation(conversation.id)}
-                        disabled={isLoading}
-                        title={conversation.title}
-                        className="flex-1 min-w-0 text-left"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <p className="text-sm font-semibold leading-5 truncate">{conversation.title}</p>
-                          <span className="text-[10px] uppercase tracking-wide opacity-60 flex-shrink-0">
-                            {conversation.shortDate}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-xs leading-5 opacity-75 truncate">{conversation.preview}</p>
-                      </button>
-                      <button
-                        onClick={() => handleDeleteConversation(conversation.id)}
-                        disabled={isLoading}
-                        title={t('deleteChat', { defaultValue: 'Delete chat' })}
-                        className="flex-shrink-0 inline-flex items-center justify-center rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600 dark:text-gray-500 dark:hover:bg-red-500/10 dark:hover:text-red-300 transition-colors disabled:opacity-50"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
+              )
+            ) : (
+              formattedConversations.map(conversation => (
+                <button
+                  key={conversation.id}
+                  onClick={() => handleSelectConversation(conversation.id)}
+                  disabled={isLoading}
+                  title={conversation.title}
+                  className={`min-w-[220px] lg:min-w-0 text-left rounded-2xl px-3 py-3 transition-all border ${
+                    currentConversationId === conversation.id
+                      ? 'bg-brand-50 border-brand-200 text-brand-800 dark:bg-brand-900/20 dark:border-brand-700 dark:text-brand-100'
+                      : 'bg-white/60 border-white/50 text-gray-700 hover:bg-white dark:bg-gray-900/50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-900'
+                  } ${isHistoryMinimized ? 'min-w-0 w-full flex items-center justify-center px-0' : ''}`}
+                >
+                  {isHistoryMinimized ? (
+                    <History className="w-4 h-4" />
+                  ) : (
+                    <>
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="text-sm font-semibold leading-5 truncate">{conversation.title}</p>
+                        <span className="text-[10px] uppercase tracking-wide opacity-60 flex-shrink-0">
+                          {conversation.shortDate}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs leading-5 opacity-75 truncate">{conversation.preview}</p>
+                    </>
+                  )}
+                </button>
+              ))
+            )}
+          </div>
         </div>
       </aside>
 
@@ -575,41 +412,9 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
               setMapError('')
             }}
           />
-        ) : consultationState && !consultationState.demoMode ? (
-          <ConsultationPanel
-            actorType="user"
-            actorId={userId ?? 0}
-            doctor={{
-              id: consultationState.target.id,
-              name: consultationState.target.name,
-              specialty: consultationState.target.specialty,
-            }}
-            initialConsultationId={consultationState.consultationId}
-            variant="page"
-            storageMode="local"
-            onClose={() => setConsultationState(null)}
-          />
-        ) : consultationState ? (
-          <ConsultationPanel
-            actorType="user"
-            actorId={0}
-            doctor={{
-              id: consultationState.target.id,
-              name: consultationState.target.name,
-              specialty: consultationState.target.specialty,
-            }}
-            initialConsultationId={consultationState.consultationId}
-            variant="page"
-            demoSession={{
-              doctorName: consultationState.target.name,
-              doctorSpecialty: consultationState.target.specialty,
-              patientLabel: consultationState.patientLabel ?? 'Demo patient',
-            }}
-            onClose={() => setConsultationState(null)}
-          />
         ) : (
           <>
-            <div ref={messagesContainerRef} className="relative flex-1 overflow-y-auto px-2 sm:px-4 py-4 sm:py-6 space-y-4 sm:space-y-5">
+            <div className="flex-1 overflow-y-auto px-2 sm:px-4 py-4 sm:py-6 space-y-4 sm:space-y-5">
               {showWelcome && (
                 <div className="flex flex-col items-center justify-center min-h-[50vh] text-center animate-fade-in px-2">
                   <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-br from-brand-500 to-brand-700 rounded-2xl sm:rounded-3xl flex items-center justify-center shadow-2xl shadow-brand-500/30 mb-4 sm:mb-6">
@@ -624,7 +429,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
 
                   {!isPremium && (
                     <div className="glass-card max-w-xl w-full p-4 sm:p-5 mb-6 text-left">
-                      <div className="flex flex-col items-start gap-4 sm:flex-row sm:justify-between">
+                      <div className="flex items-start justify-between gap-4">
                         <div>
                           <p className="text-sm font-semibold text-gray-900 dark:text-white">
                             {t('premiumUpsellTitle')}
@@ -635,7 +440,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
                         </div>
                         <button
                           onClick={onOpenPremium}
-                          className="btn-primary flex w-full items-center justify-center gap-2 px-4 py-2 text-xs sm:w-auto sm:text-sm"
+                          className="btn-primary flex items-center gap-2 px-4 py-2 text-xs sm:text-sm"
                         >
                           <Crown className="w-4 h-4" />
                           {t('upgradePremium')}
@@ -673,22 +478,8 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
                   isPremium={isPremium}
                   onOpenPremium={onOpenPremium}
                   onStartDoctorChat={openDoctorConsultation}
-                  onStartFacilityChat={openFacilityCallCenter}
-                  reservationUserKey={reservationUserKey}
-                  reservationUserLabel={reservationUserLabel}
                 />
               ))}
-
-              {showScrollToBottom && (
-                <button
-                  onClick={scrollToBottom}
-                  className="sticky bottom-4 ml-auto mr-2 sm:mr-4 flex h-11 w-11 items-center justify-center rounded-full bg-brand-600 text-white shadow-lg shadow-brand-500/30 transition-colors hover:bg-brand-700"
-                  aria-label={t('scrollToLatest', { defaultValue: 'Go to latest message' })}
-                  title={t('scrollToLatest', { defaultValue: 'Go to latest message' })}
-                >
-                  <ChevronDown className="h-5 w-5" />
-                </button>
-              )}
 
               <div ref={bottomRef} />
             </div>
@@ -739,6 +530,20 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
           </>
         )}
       </div>
+
+      {consultationState && userId && (
+        <ConsultationPanel
+          actorType="user"
+          actorId={userId}
+          doctor={{
+            id: consultationState.doctor.id,
+            name: consultationState.doctor.name,
+            specialty: consultationState.doctor.specialty,
+          }}
+          initialConsultationId={consultationState.consultationId}
+          onClose={() => setConsultationState(null)}
+        />
+      )}
     </div>
   )
 }

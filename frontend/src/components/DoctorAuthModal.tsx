@@ -223,9 +223,8 @@ const DoctorAuthModal: React.FC<DoctorAuthModalProps> = ({ onClose, onAuthentica
   }
 
   return (
-    <div className="fixed inset-0 z-[85] bg-gray-950/45 backdrop-blur-sm overflow-y-auto px-4 py-4 sm:py-6">
-      <div className="min-h-full flex items-center justify-center">
-        <div className="glass-card w-full max-w-lg max-h-[calc(100vh-2rem)] sm:max-h-[calc(100vh-3rem)] overflow-y-auto p-5 sm:p-6">
+    <div className="fixed inset-0 z-[85] bg-gray-950/45 backdrop-blur-sm flex items-center justify-center px-4">
+      <div className="glass-card w-full max-w-lg p-5 sm:p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-brand-600 dark:text-brand-300">
@@ -390,7 +389,6 @@ const DoctorAuthModal: React.FC<DoctorAuthModalProps> = ({ onClose, onAuthentica
         <button onClick={handleSubmit} disabled={isSubmitting} className="btn-primary mt-5 w-full">
           {mode === 'login' ? t('doctorLoginTitle') : t('doctorSignupTitle')}
         </button>
-        </div>
       </div>
     </div>
   )

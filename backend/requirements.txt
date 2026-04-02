@@ -2,8 +2,3 @@ fastapi
 uvicorn
 sqlalchemy
 pydantic
-google-genai
-numpy
-pandas
-scikit-learn
-joblib
