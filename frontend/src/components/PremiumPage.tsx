@@ -7,10 +7,12 @@ interface PremiumPageProps {
   onActivate: () => void
   onDeactivate: () => void
   onBack: () => void
+  monthlyPrice: number
+  yearlyPrice: number
   referralPoints: number
   referralCount: number
   referralCode: string
-  onAddReferral: () => void
+  referralLink: string
   onRedeemReferralMonth: () => void
 }
 
@@ -19,10 +21,12 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
   onActivate,
   onDeactivate,
   onBack,
+  monthlyPrice,
+  yearlyPrice,
   referralPoints,
   referralCount,
   referralCode,
-  onAddReferral,
+  referralLink,
   onRedeemReferralMonth,
 }) => {
   const { t } = useTranslation()
@@ -34,16 +38,14 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
   const [checkoutError, setCheckoutError] = useState('')
   const [referralMessage, setReferralMessage] = useState('')
 
-  const monthlyPrice = 2.5
-  const yearlyPrice = 27
   const yearlySavingsPercent = Math.round(((monthlyPrice * 12 - yearlyPrice) / (monthlyPrice * 12)) * 100)
 
   const plans = useMemo(
     () => [
-      { id: 'monthly', name: t('planMonthly'), price: '$2.50', note: t('planMonthlyNote') },
-      { id: 'yearly', name: t('planYearly'), price: '$27.00', note: t('planYearlyNote', { percent: yearlySavingsPercent }) },
+      { id: 'monthly', name: t('planMonthly'), price: `$${monthlyPrice.toFixed(2)}`, note: t('planMonthlyNote') },
+      { id: 'yearly', name: t('planYearly'), price: `$${yearlyPrice.toFixed(2)}`, note: t('planYearlyNote', { percent: yearlySavingsPercent }) },
     ],
-    [t, yearlySavingsPercent]
+    [monthlyPrice, t, yearlyPrice, yearlySavingsPercent]
   )
 
   const features = [
@@ -86,16 +88,11 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
 
   const handleCopyReferralCode = async () => {
     try {
-      await navigator.clipboard.writeText(referralCode)
+      await navigator.clipboard.writeText(referralLink)
       setReferralMessage(t('referralCopied'))
     } catch {
       setReferralMessage(t('referralCopyFallback'))
     }
-  }
-
-  const handleAddReferral = () => {
-    onAddReferral()
-    setReferralMessage(t('referralAdded'))
   }
 
   const handleRedeemReferralMonth = () => {
@@ -202,9 +199,9 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
                   </div>
                   <div className="rounded-2xl bg-white/80 p-3 dark:bg-slate-900/60">
                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
-                      {t('referralCode')}
+                      {t('referralLinkLabel', { defaultValue: 'Referral link' })}
                     </p>
-                    <p className="mt-2 text-sm font-bold text-slate-900 dark:text-white break-all">{referralCode}</p>
+                    <p className="mt-2 text-sm font-bold text-slate-900 dark:text-white break-all">{referralLink}</p>
                     <button
                       onClick={handleCopyReferralCode}
                       className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-300"
@@ -216,12 +213,6 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
                 </div>
 
                 <div className="mt-4 space-y-2">
-                  <button
-                    onClick={handleAddReferral}
-                    className="w-full rounded-xl border border-brand-200 bg-white/80 px-4 py-3 text-sm font-semibold text-brand-700 transition-colors hover:bg-brand-100 dark:border-brand-800 dark:bg-slate-900/60 dark:text-brand-300 dark:hover:bg-brand-900/30"
-                  >
-                    {t('simulateReferral')}
-                  </button>
                   <button
                     onClick={handleRedeemReferralMonth}
                     disabled={referralPoints < 10}

@@ -1,3 +1,6 @@
+import json
+import http.client
+import os
 import re
 import hashlib
 import hmac
@@ -10,7 +13,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 
+try:
+    from google import genai
+except ImportError:  # pragma: no cover - optional dependency
+    genai = None
+
 from . import database, models
+from .disease_prediction import SYMPTOM_LABELS, localize_label, service as disease_prediction_service
 
 
 app = FastAPI(title="MyDoctor Triage API", version="1.1.0")
@@ -38,7 +47,13 @@ def ensure_schema() -> None:
             connection.exec_driver_sql("ALTER TABLE doctors ADD COLUMN is_authorized BOOLEAN NOT NULL DEFAULT 1")
 
 
+def clear_legacy_ai_messages() -> None:
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql("DELETE FROM messages WHERE role = 'ai'")
+
+
 ensure_schema()
+clear_legacy_ai_messages()
 
 app.add_middleware(
     CORSMiddleware,
@@ -115,6 +130,18 @@ class DoctorSchema(BaseModel):
     consultation_fee: int
 
 
+class FacilitySchema(BaseModel):
+    id: int
+    name: str
+    facility_type: str
+    specialty_focus: str
+    rating: float
+    location: str
+    distance: float
+    reservation_fee: int
+    description: str
+
+
 class ChatResponse(BaseModel):
     reply: str
     summary: str = ""
@@ -126,6 +153,8 @@ class ChatResponse(BaseModel):
     next_steps: List[str] = Field(default_factory=list)
     follow_up_questions: List[str] = Field(default_factory=list)
     doctors: List[DoctorSchema] = Field(default_factory=list)
+    clinics: List[FacilitySchema] = Field(default_factory=list)
+    hospitals: List[FacilitySchema] = Field(default_factory=list)
     urgent: bool = False
 
 
@@ -159,6 +188,29 @@ class ConsultationSchema(BaseModel):
     created_at: str
     updated_at: str
     messages: List[ConsultationMessageSchema] = Field(default_factory=list)
+
+
+class PredictRequest(BaseModel):
+    symptoms: List[str] = Field(default_factory=list)
+    text: str = ""
+    language: str = "en"
+
+
+class DiseasePredictionSchema(BaseModel):
+    disease_key: str
+    disease: str
+    probability: float
+    confidence: str
+    reasons: List[str] = Field(default_factory=list)
+
+
+class PredictResponse(BaseModel):
+    input_symptoms: List[str] = Field(default_factory=list)
+    input_symptom_keys: List[str] = Field(default_factory=list)
+    extracted_symptoms: List[str] = Field(default_factory=list)
+    predictions: List[DiseasePredictionSchema] = Field(default_factory=list)
+    model: dict = Field(default_factory=dict)
+    disclaimer: str = ""
 
 
 LANG_MAP = {
@@ -206,6 +258,85 @@ SPECIALTY_SYNONYMS = {
     "orthopedics": "orthopedist",
 }
 
+FACILITY_CATALOG = {
+    "clinics": [
+        {
+            "id": 1,
+            "name": "Mirabad Family Clinic",
+            "specialties": ["general practitioner", "pediatrician"],
+            "rating": 4.7,
+            "location": "Mirabad district",
+            "distance": 1.1,
+            "reservation_fee": 120000,
+        },
+        {
+            "id": 2,
+            "name": "City Heart Clinic",
+            "specialties": ["cardiologist", "general practitioner"],
+            "rating": 4.9,
+            "location": "Central avenue",
+            "distance": 2.8,
+            "reservation_fee": 220000,
+        },
+        {
+            "id": 3,
+            "name": "Neuro Care Clinic",
+            "specialties": ["neurologist", "psychiatrist"],
+            "rating": 4.8,
+            "location": "Yunusabad",
+            "distance": 3.6,
+            "reservation_fee": 210000,
+        },
+        {
+            "id": 4,
+            "name": "Skin Health Clinic",
+            "specialties": ["dermatologist", "general practitioner"],
+            "rating": 4.6,
+            "location": "Chilanzar",
+            "distance": 4.2,
+            "reservation_fee": 160000,
+        },
+    ],
+    "hospitals": [
+        {
+            "id": 101,
+            "name": "Tashkent Emergency Hospital",
+            "specialties": ["general practitioner", "cardiologist", "orthopedist"],
+            "rating": 4.9,
+            "location": "Downtown medical zone",
+            "distance": 2.4,
+            "reservation_fee": 0,
+        },
+        {
+            "id": 102,
+            "name": "Central Multispecialty Hospital",
+            "specialties": ["general practitioner", "neurologist", "dermatologist", "pediatrician"],
+            "rating": 4.8,
+            "location": "Shaykhantakhur",
+            "distance": 3.1,
+            "reservation_fee": 90000,
+        },
+        {
+            "id": 103,
+            "name": "Children and Family Hospital",
+            "specialties": ["pediatrician", "general practitioner"],
+            "rating": 4.7,
+            "location": "Sergeli",
+            "distance": 5.3,
+            "reservation_fee": 80000,
+        },
+        {
+            "id": 104,
+            "name": "Trauma and Recovery Hospital",
+            "specialties": ["orthopedist", "general practitioner"],
+            "rating": 4.7,
+            "location": "Yakkasaray",
+            "distance": 4.7,
+            "reservation_fee": 100000,
+        },
+    ],
+}
+
 SPECIALTY_HINTS = {
     "cardiologist": [
         "chest pain", "pressure in chest", "palpitations", "rapid heartbeat",
@@ -238,25 +369,34 @@ EMERGENCY_KEYWORDS = [
     "shortness of breath", "difficulty breathing", "bleeding profusely",
     "stroke", "unconscious", "not breathing", "suicide", "overdose",
     "severe allergic reaction", "anaphylaxis", "face drooping", "slurred speech",
-    "seizure", "passed out", "severe bleeding",
+    "seizure", "passed out", "severe bleeding", "collapsed", "unresponsive",
+    "turning blue", "blue lips", "not waking up", "stopped breathing",
     "боль в груди", "инфаркт", "трудно дышать", "не могу дышать",
     "кровотечение", "инсульт", "потерял сознание", "судороги",
-    "ko'krak og'rig'i", "ko'kragim og'riyapti", "nafas ololmayapman", "nafasim qisilyapti", "qon ketyapti",
+    "ko'krak og'rig'i", "nafas ololmayapman", "qon ketyapti",
     "hushini yo'qotdi", "talvasa", "insult",
+]
+
+EMERGENCY_CONTEXT_HINTS = [
+    "help now", "urgent help", "emergency", "dying", "will die", "save him", "save her",
+    "save my", "my dad", "my father", "my mom", "my mother", "my husband", "my wife",
+    "my child", "my baby", "someone collapsed", "please hurry",
+    "tez", "shoshiling", "yordam bering", "o'lyapti", "saqlab qoling",
 ]
 
 EMERGENCY_PATTERNS = {
     "breathing": [
         "can't breathe", "cannot breathe", "not breathing", "difficulty breathing",
-        "shortness of breath", "gasping", "turning blue", "choking",
+        "shortness of breath", "gasping", "turning blue", "choking", "blue lips",
+        "stopped breathing", "cannot speak full sentences",
         "не могу дышать", "трудно дышать", "не дышит", "задыхаюсь",
-        "nafas ololmayapman", "nafas qisilishi", "nafasim qisilyapti", "nafasim qisildi", "bo'g'ilib qoldi",
+        "nafas ololmayapman", "nafas qisilishi", "bo'g'ilib qoldi",
     ],
     "cardiac": [
         "chest pain", "heart attack", "pressure in chest", "crushing chest pain",
-        "pain spreading to arm", "jaw pain with chest pain",
+        "pain spreading to arm", "jaw pain with chest pain", "cold sweat with chest pain",
         "боль в груди", "инфаркт", "давит в груди",
-        "ko'krak og'rig'i", "ko'kragim og'riyapti", "yurak xuruji",
+        "ko'krak og'rig'i", "yurak xuruji",
     ],
     "stroke": [
         "stroke", "face drooping", "slurred speech", "one sided weakness",
@@ -272,7 +412,7 @@ EMERGENCY_PATTERNS = {
     ],
     "neurologic": [
         "seizure", "passed out", "unconscious", "fainted and won't wake",
-        "sudden collapse",
+        "sudden collapse", "collapsed", "unresponsive", "not waking up",
         "судороги", "потерял сознание", "без сознания",
         "talvasa", "hushini yo'qotdi", "hushsiz",
     ],
@@ -325,7 +465,7 @@ GENERAL_SYMPTOM_HINTS = [
     "back", "joint", "throat", "runny nose", "sore throat", "fatigue", "tired",
     "og'ri", "isitma", "yo'tal", "shamoll", "tomoq", "ko'ngil ayn", "qus",
     "ich ket", "nafas", "bosh", "karaxt", "toshma", "qich", "qorin", "oshqozon",
-    "bel", "bo'g'im", "siydik", "siyganda", "achish", "holsiz", "charch", "yurak", "ko'krak",
+    "bel", "bo'g'im", "siydik", "holsiz", "charch", "yurak", "ko'krak",
 ]
 
 VAGUE_INPUT_HINTS = [
@@ -337,7 +477,7 @@ VAGUE_INPUT_HINTS = [
 SYMPTOM_BUCKET_HINTS = {
     "cardiac": [
         "chest pain", "pressure in chest", "palpitations", "rapid heartbeat", "heart",
-        "ko'krak", "ko'krag", "yurak",
+        "ko'krak", "yurak",
     ],
     "headache": [
         "headache", "migraine", "dizziness", "numbness", "vision loss", "confusion",
@@ -365,7 +505,7 @@ SYMPTOM_BUCKET_HINTS = {
     ],
     "urinary": [
         "urine", "urination", "burning when i pee", "pain when i pee", "frequent urination",
-        "bladder", "siydik", "siyganda", "siyish", "tez-tez siyish", "achish", "achishish",
+        "bladder", "siydik", "tez-tez siyish", "achishish",
     ],
     "cold_flu": [
         "cold", "flu", "cough", "runny nose", "sore throat", "congestion", "sneezing",
@@ -386,6 +526,13 @@ BUCKET_TO_SPECIALTY = {
 }
 
 TRIAGE_MODE = "grounded_rules"
+RAPIDAPI_HOST = os.getenv(
+    "RAPIDAPI_DOCTOR_HOST",
+    "ai-doctor-api-ai-medical-chatbot-healthcare-ai-assistant.p.rapidapi.com",
+)
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 
 
 def normalize_text(text: str) -> str:
@@ -411,6 +558,8 @@ def has_specific_symptom_details(lowered: str) -> bool:
 def needs_more_symptom_details(lowered: str) -> bool:
     if not lowered:
         return True
+    if emergency_reason(lowered) or contains_any(lowered, EMERGENCY_CONTEXT_HINTS):
+        return False
     if has_specific_symptom_details(lowered):
         return False
 
@@ -425,90 +574,6 @@ def extract_severity_score(lowered: str) -> Optional[int]:
     if match:
         return int(match.group(1))
     return None
-
-
-def extract_duration_category(lowered: str) -> Optional[str]:
-    if re.search(r"\b\d+\s*(month|months|year|years|oy|oydan|yil|yildan)\b", lowered):
-        return "long"
-    if re.search(r"\b\d+\s*(week|weeks|hafta|haftadan)\b", lowered):
-        return "weeks"
-    if re.search(r"\b\d+\s*(day|days|kun|kundan)\b", lowered):
-        return "days"
-
-    if contains_any(lowered, ["month", "months", "year", "years", "oy", "yil"]):
-        return "long"
-    if contains_any(lowered, ["week", "weeks", "hafta"]):
-        return "weeks"
-    if contains_any(lowered, ["day", "days", "today", "yesterday", "kun", "bugun", "kecha"]):
-        return "days"
-    return None
-
-
-def extract_severity_level(lowered: str, score: Optional[int], urgency: str) -> Optional[str]:
-    severe_hints = [
-        "severe", "intense", "worst", "unbearable", "qattiq", "kuchli", "chidab bo'lmaydi",
-        "сил", "сильн", "резк",
-    ]
-    mild_hints = [
-        "mild", "slight", "light", "yengil", "biroz", "ozroq", "небольш",
-    ]
-
-    if score is not None:
-        if score >= 8:
-            return "severe"
-        if score >= 4:
-            return "moderate"
-        return "mild"
-
-    if contains_any(lowered, severe_hints) or urgency == "high":
-        return "severe"
-    if urgency == "medium":
-        return "moderate"
-    if contains_any(lowered, mild_hints):
-        return "mild"
-    return None
-
-
-def contextualize_summary(language: str, base_summary: str, severity_level: Optional[str], duration_category: Optional[str]) -> str:
-    extras = {
-        "en": {
-            "severity": {
-                "mild": "The description sounds milder right now.",
-                "moderate": "The description suggests a moderate level of symptoms.",
-                "severe": "The description suggests stronger symptoms.",
-            },
-            "duration": {
-                "days": "It also sounds like this has been going on for at least part of the day or several days.",
-                "weeks": "It also sounds like this has been going on for weeks.",
-                "long": "It also sounds like this has been ongoing for a longer time.",
-            },
-        },
-        "uz": {
-            "severity": {
-                "mild": "Ta'rifga ko'ra belgi hozircha yengilroq ko'rinadi.",
-                "moderate": "Ta'rifga ko'ra belgi o'rtacha darajada ko'rinadi.",
-                "severe": "Ta'rifga ko'ra belgi kuchliroq ko'rinadi.",
-            },
-            "duration": {
-                "days": "Bu kamida bir necha soat yoki bir necha kundan beri davom etayotganga o'xshaydi.",
-                "weeks": "Bu bir necha haftadan beri davom etayotganga o'xshaydi.",
-                "long": "Bu ancha uzoq davom etayotgan holatga o'xshaydi.",
-            },
-        },
-    }
-
-    lang = language if language in extras else "en"
-    parts = [base_summary.strip()]
-
-    severity_text = extras[lang]["severity"].get(severity_level or "", "")
-    duration_text = extras[lang]["duration"].get(duration_category or "", "")
-
-    if severity_text:
-        parts.append(severity_text)
-    if duration_text:
-        parts.append(duration_text)
-
-    return " ".join(part for part in parts if part).strip()
 
 
 def detect_symptom_bucket(lowered: str, specialty: str) -> str:
@@ -835,6 +900,94 @@ def shorten_advice(text: str, max_sentences: int = 2, max_chars: int = 180) -> s
     return shortened
 
 
+def pick_variant(seed: str, options: List[str]) -> str:
+    if not options:
+        return ""
+    index = int(hashlib.sha256(seed.encode("utf-8")).hexdigest(), 16) % len(options)
+    return options[index]
+
+
+def compose_reply(
+    language: str,
+    message: str,
+    summary: str,
+    advice: str,
+    next_steps: List[str],
+    follow_up_questions: List[str],
+    urgent: bool,
+) -> str:
+    lang = language if language in {"en", "uz"} else "en"
+    seed_base = normalize_text(message)
+
+    intros = {
+        "en": {
+            "urgent": [
+                "This needs immediate action.",
+                "This should be treated as urgent right now.",
+                "This sounds serious and needs action now.",
+            ],
+            "standard": [
+                "Here is the safest next plan based on what you wrote.",
+                "Based on your message, this is the clearest next-step guidance.",
+                "From the symptoms you described, this is the safest answer I can give.",
+            ],
+            "steps": [
+                "What to do now:",
+                "Next actions:",
+                "Do this now:",
+            ],
+            "questions": [
+                "If you want a more exact next step, reply with:",
+                "To make the next answer more precise, send:",
+                "If you want the answer narrowed further, tell me:",
+            ],
+        },
+        "uz": {
+            "urgent": [
+                "Bu holatda darhol harakat qilish kerak.",
+                "Buni hozirning o'zida shoshilinch holat deb qabul qiling.",
+                "Bu jiddiy ko'rinadi va darhol choraga o'tish kerak.",
+            ],
+            "standard": [
+                "Yozganingizga qarab eng xavfsiz keyingi yo'l mana shu.",
+                "Siz bergan belgilarga qarab eng aniq keyingi tavsiya shu.",
+                "Ta'riflagan belgilar bo'yicha eng xavfsiz javob mana shu.",
+            ],
+            "steps": [
+                "Hozir nima qilish kerak:",
+                "Keyingi qadamlar:",
+                "Hozir shularni qiling:",
+            ],
+            "questions": [
+                "Javobni yanada aniqroq qilish uchun shularni yozing:",
+                "Keyingi javobni toraytirish uchun quyidagilarni yuboring:",
+                "Aniqroq yo'naltirish uchun mana bularni ayting:",
+            ],
+        },
+    }
+
+    labels = lang if lang in intros else "en"
+    intro = pick_variant(f"{seed_base}:intro:{'urgent' if urgent else 'standard'}", intros[labels]["urgent" if urgent else "standard"])
+    step_label = pick_variant(f"{seed_base}:steps", intros[labels]["steps"])
+    question_label = pick_variant(f"{seed_base}:questions", intros[labels]["questions"])
+
+    sections: List[str] = []
+    for text in [intro, summary, advice]:
+        cleaned = re.sub(r"\s+", " ", (text or "").strip())
+        if cleaned and cleaned not in sections:
+            sections.append(cleaned)
+
+    if next_steps:
+        step_lines = [f"{idx + 1}. {step}" for idx, step in enumerate(next_steps[:4])]
+        sections.append(f"{step_label}\n" + "\n".join(step_lines))
+
+    if follow_up_questions and not urgent:
+        question_lines = [f"- {question}" for question in follow_up_questions[:2]]
+        sections.append(f"{question_label}\n" + "\n".join(question_lines))
+
+    return "\n\n".join(sections)
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
     digest = hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
@@ -982,15 +1135,19 @@ def serialize_consultation(
 
 def is_emergency(text: str) -> bool:
     lowered = normalize_text(text)
+    if emergency_reason(lowered):
+        return True
     if any(keyword in lowered for keyword in EMERGENCY_KEYWORDS):
         return True
 
-    matched_groups = 0
-    for patterns in EMERGENCY_PATTERNS.values():
-        if any(pattern in lowered for pattern in patterns):
-            matched_groups += 1
+    if contains_any(lowered, EMERGENCY_CONTEXT_HINTS):
+        danger_terms = [
+            "pain", "breath", "bleed", "bleeding", "collapse", "collapsed",
+            "unconscious", "seizure", "chest", "ko'krak", "nafas", "qon", "hush",
+        ]
+        return any(term in lowered for term in danger_terms)
 
-    return matched_groups > 0
+    return False
 
 
 def emergency_reason(text: str) -> Optional[str]:
@@ -1048,7 +1205,137 @@ def emergency_summary(language: str, reason: Optional[str]) -> str:
     return summaries[lang][key]
 
 
+def emergency_dispatch_steps(language: str, reason: Optional[str]) -> List[str]:
+    steps = {
+        "en": {
+            "default": [
+                "Call emergency services now.",
+                "Unlock the door and keep the phone on speaker if you can.",
+                "Do not give food, drink, or medicine unless a clinician tells you to.",
+            ],
+            "breathing": [
+                "Call emergency services now.",
+                "Sit the person upright or clear anything blocking the airway.",
+                "If they stop breathing, start CPR if you know how.",
+            ],
+            "cardiac": [
+                "Call emergency services now.",
+                "Stop activity and keep the person seated and still.",
+                "If they become unresponsive and stop breathing, start CPR if you know how.",
+            ],
+            "stroke": [
+                "Call emergency services now.",
+                "Note the exact time the symptoms started or when the person was last normal.",
+                "Keep them safe and do not give food, drink, or pills.",
+            ],
+            "bleeding": [
+                "Call emergency services now.",
+                "Press firmly on the bleeding area with a clean cloth.",
+                "If possible, raise the injured area above heart level.",
+            ],
+            "neurologic": [
+                "Call emergency services now.",
+                "If there is a seizure, protect the head and turn the person onto their side after it stops.",
+                "Do not put anything in their mouth.",
+            ],
+            "allergy": [
+                "Call emergency services now.",
+                "Use an epinephrine auto-injector immediately if one is available.",
+                "Keep the person lying down unless breathing is easier sitting up.",
+            ],
+            "overdose": [
+                "Call emergency services now.",
+                "Stay with the person and remove nearby pills, alcohol, weapons, or sharp objects.",
+                "If they are sleepy but breathing, place them on their side.",
+            ],
+            "trauma": [
+                "Call emergency services now.",
+                "Keep the person still and do not move the neck or back unless there is immediate danger.",
+                "Apply firm pressure to heavy bleeding with a clean cloth.",
+            ],
+            "pregnancy": [
+                "Call emergency services now.",
+                "Heavy bleeding, fainting, or severe pain in pregnancy needs immediate care.",
+                "Lie on the left side while waiting if the person feels faint.",
+            ],
+            "infant": [
+                "Call emergency services now.",
+                "If the baby is not breathing normally or not responding, start infant CPR if you know how.",
+                "Keep the baby warm and do not force feeds.",
+            ],
+        },
+        "uz": {
+            "default": [
+                "Hozirning o'zida tez yordam chaqiring.",
+                "Iloji bo'lsa eshikni oching va telefonni ovoz kuchaytirgichga qo'ying.",
+                "Shifokor aytmaguncha ovqat, ichimlik yoki dori bermang.",
+            ],
+            "breathing": [
+                "Hozirning o'zida tez yordam chaqiring.",
+                "Odamni tik o'tqazing yoki nafas yo'lini to'sayotgan narsani olib tashlang.",
+                "Agar nafas to'xtasa, bilsangiz CPR boshlang.",
+            ],
+            "cardiac": [
+                "Hozirning o'zida tez yordam chaqiring.",
+                "Harakatni to'xtating va odamni o'tqizib tinch tuting.",
+                "Agar hushsiz bo'lib nafas olmay qolsa, bilsangiz CPR boshlang.",
+            ],
+            "stroke": [
+                "Hozirning o'zida tez yordam chaqiring.",
+                "Belgilar qachon boshlanganini yoki oxirgi marta qachon normal bo'lganini eslab qoling.",
+                "Ovqat, ichimlik yoki dori bermang.",
+            ],
+            "bleeding": [
+                "Hozirning o'zida tez yordam chaqiring.",
+                "Qon ketayotgan joyni toza mato bilan qattiq bosib turing.",
+                "Iloji bo'lsa jarohatlangan joyni yurakdan balandroq tuting.",
+            ],
+            "neurologic": [
+                "Hozirning o'zida tez yordam chaqiring.",
+                "Talvasa bo'lsa boshini himoya qiling va tugagach yonboshiga o'giring.",
+                "Og'ziga hech narsa solmang.",
+            ],
+            "allergy": [
+                "Hozirning o'zida tez yordam chaqiring.",
+                "Agar epinefrin auto-inyektori bo'lsa, darhol ishlating.",
+                "Nafas olish yomonlashmasa, yotqizib turing.",
+            ],
+            "overdose": [
+                "Hozirning o'zida tez yordam chaqiring.",
+                "Odam bilan birga qoling va dorilar, alkogol, qurol yoki o'tkir buyumlarni olib tashlang.",
+                "Agar uyquchan bo'lsa-yu nafas olayotgan bo'lsa, yonboshiga yotqizing.",
+            ],
+            "trauma": [
+                "Hozirning o'zida tez yordam chaqiring.",
+                "Odamni qimirlatmang, ayniqsa bo'yin yoki bel jarohati bo'lishi mumkin bo'lsa.",
+                "Kuchli qon ketayotgan bo'lsa, toza mato bilan qattiq bosib turing.",
+            ],
+            "pregnancy": [
+                "Hozirning o'zida tez yordam chaqiring.",
+                "Homiladorlikda kuchli og'riq, hushdan ketish yoki qon ketish zudlik bilan yordam talab qiladi.",
+                "Agar holsiz bo'lsa, kutayotganda chap yonboshiga yotqizing.",
+            ],
+            "infant": [
+                "Hozirning o'zida tez yordam chaqiring.",
+                "Agar chaqaloq normal nafas olmayotgan yoki javob bermayotgan bo'lsa, bilsangiz infant CPR boshlang.",
+                "Chaqaloqni issiq tuting va majburlab ovqat bermang.",
+            ],
+        },
+    }
+    lang = language if language in steps else "en"
+    key = reason if reason in steps[lang] else "default"
+    return steps[lang][key]
+
+
 def emergency_advice(language: str, reason: Optional[str]) -> str:
+    lead = {
+        "en": "This may be life-threatening. Act now:",
+        "ru": "Это может быть опасно для жизни. Действуйте немедленно:",
+        "uz": "Bu hayot uchun xavfli bo'lishi mumkin. Darhol shunday qiling:",
+    }
+    lang = language if language in lead else "en"
+    return f"{lead[lang]} " + " ".join(emergency_dispatch_steps(lang, reason))
+
     advice = {
         "en": {
             "default": (
@@ -1233,7 +1520,296 @@ def prevention_tips_text(language: str, specialty: str, urgent: bool) -> List[st
     return tips[lang].get(key, tips[lang]["general practitioner"])
 
 
+def detect_instruction_scenario(lowered: str) -> Optional[str]:
+    ordered_patterns = [
+        ("stroke", ["face drooping", "slurred speech", "one sided weakness", "can't move one arm", "yuz qiyshaydi", "nutqi buzildi"]),
+        ("cardiac", ["chest pain", "pressure in chest", "pain spreading to arm", "jaw pain with chest pain", "cold sweat with chest pain", "ko'krak og'rig'i"]),
+        ("breathing", ["can't breathe", "cannot breathe", "not breathing", "shortness of breath", "gasping", "choking", "nafas ololmayapman", "nafas qisilishi"]),
+        ("anaphylaxis", ["anaphylaxis", "severe allergic reaction", "throat swelling", "tongue swelling", "lip swelling with breathing trouble", "tomoq shishdi", "til shishdi"]),
+        ("seizure", ["seizure", "talvasa", "unconscious", "collapsed", "unresponsive", "not waking up", "hushini yo'qotdi", "hushsiz"]),
+        ("overdose", ["overdose", "took too many pills", "poisoning", "suicide", "self harm", "want to kill myself", "zaharlanish", "dozani oshirib yubordi"]),
+        ("severe_bleeding", ["severe bleeding", "bleeding profusely", "won't stop bleeding", "deep wound", "qon to'xtamayapti", "qon ketyapti"]),
+        ("head_injury", ["hit my head", "head injury", "concussion", "fell and hit head", "boshini urdi", "boshidan urilgan"]),
+        ("fracture", ["fracture", "broken bone", "cannot bear weight", "deformed limb", "open fracture", "siniq", "ochiq siniq"]),
+        ("burn", ["burn", "serious burn", "kuyish", "kuchli kuyish"]),
+        ("stomach_severe", ["severe abdominal pain", "right lower abdomen", "appendix", "appendicitis", "qattiq qorin og'rig'i", "qorin og'rig'i kuchli"]),
+        ("vomiting", ["vomiting", "can't keep fluids", "cannot keep fluids", "diarrhea", "qusish", "ich ket"]),
+        ("urinary", ["burning when i pee", "pain when i pee", "frequent urination", "blood in urine", "siyganda achishish", "tez-tez siyish"]),
+        ("rash", ["rash", "itching", "hives", "toshma", "qichishish"]),
+        ("fever", ["fever", "high fever", "temperature", "isitma", "harorat"]),
+        ("headache", ["headache", "migraine", "dizziness", "bosh og'rig'i", "bosh aylanishi"]),
+        ("back_strain", ["back pain", "neck pain", "joint pain", "sprain", "bel og'rig'i", "bo'g'im og'rig'i"]),
+        ("cold_flu", ["cough", "sore throat", "runny nose", "flu", "yo'tal", "tomoq og'rig'i", "tumov"]),
+    ]
+    for scenario, patterns in ordered_patterns:
+        if any(pattern in lowered for pattern in patterns):
+            return scenario
+    return None
+
+
+def scenario_urgency(scenario: Optional[str]) -> Optional[str]:
+    if not scenario:
+        return None
+    if scenario in {
+        "stroke", "cardiac", "breathing", "anaphylaxis", "seizure",
+        "overdose", "severe_bleeding", "head_injury",
+    }:
+        return "high"
+    if scenario in {"fracture", "burn", "stomach_severe", "vomiting", "urinary"}:
+        return "medium"
+    return "low"
+
+
+def scenario_specific_advice(language: str, scenario: Optional[str]) -> str:
+    texts = {
+        "en": {
+            "stroke": "Possible stroke symptoms were recognized. Time matters, so treat this as an emergency and act immediately.",
+            "cardiac": "This sounds like a possible heart emergency, especially if the pain is heavy, spreading, or comes with sweating or shortness of breath.",
+            "breathing": "This sounds like a breathing emergency and should be treated as urgent right now.",
+            "anaphylaxis": "This sounds like a severe allergic reaction, which can worsen quickly and block breathing.",
+            "seizure": "This sounds like a seizure or collapse emergency and the person needs immediate in-person help.",
+            "overdose": "This may be an overdose or self-harm emergency and should be treated as life-threatening.",
+            "severe_bleeding": "Heavy bleeding needs immediate first aid and urgent emergency help.",
+            "head_injury": "A head injury needs close attention, especially if there is fainting, vomiting, confusion, or worsening headache.",
+            "fracture": "This sounds like a possible fracture or serious limb injury and should be immobilized and checked promptly.",
+            "burn": "Burn care depends on size, depth, and location, and serious burns need urgent in-person care.",
+            "stomach_severe": "Severe abdominal pain can signal a surgical emergency if it is intense, localized, or getting worse.",
+            "vomiting": "Vomiting or diarrhea needs dehydration prevention and earlier care if fluids cannot be kept down.",
+            "urinary": "This sounds like a urinary problem and needs quicker review if there is fever, back pain, or blood in urine.",
+            "rash": "Skin symptoms should be handled differently depending on whether there is itching alone or swelling, pain, or fever.",
+            "fever": "Fever care depends on temperature, duration, and the presence of breathing trouble, weakness, or poor fluid intake.",
+            "headache": "Headache instructions depend on whether this is gradual and typical, or sudden, severe, and unusual.",
+            "back_strain": "Muscle or joint strain is usually managed with protection and reduced strain, not only rest.",
+            "cold_flu": "Cold or flu-like symptoms usually need symptom relief and monitoring for breathing or chest warning signs.",
+        },
+        "uz": {
+            "stroke": "Insultga o'xshash belgilar aniqlandi. Vaqt juda muhim, shuning uchun buni favqulodda holat deb qabul qiling.",
+            "cardiac": "Bu yurak bilan bog'liq favqulodda holat bo'lishi mumkin, ayniqsa og'riq kuchli, tarqalayotgan yoki nafas qisilishi bilan bo'lsa.",
+            "breathing": "Bu nafas bilan bog'liq favqulodda holatga o'xshaydi va hozirning o'zida yordam kerak.",
+            "anaphylaxis": "Bu og'ir allergik reaksiya bo'lishi mumkin va tez yomonlashishi mumkin.",
+            "seizure": "Bu talvasa yoki hushdan ketish bilan bog'liq favqulodda holatga o'xshaydi.",
+            "overdose": "Bu doza oshishi yoki o'ziga zarar yetkazish bilan bog'liq xavfli holat bo'lishi mumkin.",
+            "severe_bleeding": "Kuchli qon ketishda darhol birinchi yordam va tez yordam kerak.",
+            "head_injury": "Bosh jarohati hushdan ketish, qusish, chalkashlik yoki og'riq kuchayishi bo'lsa xavfli bo'lishi mumkin.",
+            "fracture": "Bu siniq yoki jiddiy qo'l-oyoq jarohatiga o'xshaydi va qimirlatmasdan tez tekshirtirish kerak.",
+            "burn": "Kuyishda yordam kuyishning kattaligi, chuqurligi va joyiga qarab farq qiladi.",
+            "stomach_severe": "Kuchli qorin og'rig'i jiddiy ichki muammo belgisi bo'lishi mumkin.",
+            "vomiting": "Qusish yoki ich ketishda asosiy xavf suvsizlanish bo'ladi.",
+            "urinary": "Bu siydik yo'li muammosiga o'xshaydi, isitma yoki bel og'rig'i bo'lsa tezroq ko'rik kerak.",
+            "rash": "Teri belgilarida qichishishning o'zi bilan shish yoki isitma qo'shilgan holat bir xil emas.",
+            "fever": "Isitmada yordam harorat, davomiylik va qo'shimcha xavfli belgilariga qarab farq qiladi.",
+            "headache": "Bosh og'rig'ida yordam uning odatiy yoki to'satdan juda kuchli ekaniga qarab o'zgaradi.",
+            "back_strain": "Mushak yoki bo'g'im zo'riqishida faqat dam emas, balki himoya va yuklamani kamaytirish kerak.",
+            "cold_flu": "Shamollash yoki grippga o'xshash holatda simptomni yengillashtirish va xavfli belgilarni kuzatish kerak.",
+        },
+    }
+    lang = language if language in texts else "en"
+    if not scenario:
+        return ""
+    return texts[lang].get(scenario, "")
+
+
+def scenario_specific_steps(language: str, scenario: Optional[str]) -> List[str]:
+    steps = {
+        "en": {
+            "stroke": [
+                "Call emergency services immediately.",
+                "Note the exact time symptoms started or when the person was last acting normal.",
+                "Do not give food, drink, or pills while waiting.",
+            ],
+            "cardiac": [
+                "Stop all activity and sit the person down.",
+                "Call emergency services now if chest pain is heavy, spreading, or comes with sweating, nausea, or shortness of breath.",
+                "If the person becomes unresponsive and stops breathing, start CPR if you know how.",
+            ],
+            "breathing": [
+                "Call emergency services now.",
+                "Sit the person upright and loosen tight clothing.",
+                "If they stop breathing, begin CPR if you know how.",
+            ],
+            "anaphylaxis": [
+                "Use an epinephrine auto-injector immediately if available.",
+                "Call emergency services now even if symptoms start to improve.",
+                "Keep the person lying down unless breathing is easier sitting up.",
+            ],
+            "seizure": [
+                "Move hard objects away and protect the person's head.",
+                "Do not hold them down and do not put anything in their mouth.",
+                "Call emergency services if the seizure lasts more than 5 minutes, repeats, or the person does not wake properly.",
+            ],
+            "overdose": [
+                "Call emergency services now.",
+                "Stay with the person and remove pills, alcohol, sharp objects, or weapons nearby.",
+                "If they are breathing but sleepy, place them on their side.",
+            ],
+            "severe_bleeding": [
+                "Press firmly on the wound with a clean cloth or bandage.",
+                "Keep steady pressure without repeatedly checking the wound.",
+                "Call emergency services now if bleeding is heavy or does not stop.",
+            ],
+            "head_injury": [
+                "Keep the person resting and avoid sports, alcohol, and driving.",
+                "Go for urgent in-person care now if there was fainting, repeated vomiting, confusion, seizure, or worsening headache.",
+                "If neck injury is possible, keep the head and neck still.",
+            ],
+            "fracture": [
+                "Keep the injured area still and do not try to straighten it.",
+                "Apply a cold pack wrapped in cloth for 15 to 20 minutes.",
+                "Seek urgent in-person care, and call emergency services if the bone is exposed or the limb is cold, blue, or numb.",
+            ],
+            "burn": [
+                "Cool the burn under cool running water for 20 minutes.",
+                "Remove rings or tight items early, but do not peel stuck clothing off the burn.",
+                "Cover loosely with a clean non-fluffy cloth and get urgent care for large, deep, facial, hand, foot, genital, or electrical burns.",
+            ],
+            "stomach_severe": [
+                "Do not eat a heavy meal while pain is severe.",
+                "Use small sips of water only if you are not vomiting.",
+                "Get urgent in-person care now if pain is severe, one-sided, or getting worse.",
+            ],
+            "vomiting": [
+                "Take small frequent sips of water or oral rehydration solution.",
+                "Avoid alcohol, greasy food, and large meals for now.",
+                "Seek same-day care if you cannot keep fluids down, are getting weak, or notice blood.",
+            ],
+            "urinary": [
+                "Drink water unless a clinician told you to limit fluids.",
+                "Do not ignore fever, back pain, or blood in urine.",
+                "Arrange a same-day visit if those warning signs are present.",
+            ],
+            "rash": [
+                "Stop any new cream, cosmetic, soap, or medicine that may have triggered it.",
+                "Keep the skin clean and avoid scratching.",
+                "Seek urgent care if rash comes with facial swelling, trouble breathing, fever, or severe pain.",
+            ],
+            "fever": [
+                "Drink extra fluids and rest in a cool room.",
+                "Check the temperature and note how long the fever has been present.",
+                "Seek same-day care if fever is high, lasts more than 48 hours, or comes with breathing trouble, confusion, or dehydration.",
+            ],
+            "headache": [
+                "Rest in a quiet dark room and drink water.",
+                "Avoid driving if you feel dizzy, weak, or your vision is affected.",
+                "Get urgent care now if this is the worst headache of your life, started suddenly, or comes with weakness, confusion, or vomiting.",
+            ],
+            "back_strain": [
+                "Reduce lifting, bending, and twisting today.",
+                "Use ice for a new injury and heat later for stiffness.",
+                "Seek care earlier if there is weakness, numbness, loss of bladder control, or major trauma.",
+            ],
+            "cold_flu": [
+                "Rest, drink fluids, and manage fever or throat discomfort.",
+                "Avoid smoking and monitor cough and breathing.",
+                "Get checked sooner if breathing becomes difficult, chest pain starts, or fever keeps rising.",
+            ],
+        },
+        "uz": {
+            "stroke": [
+                "Darhol tez yordam chaqiring.",
+                "Belgilar qachon boshlanganini yoki oxirgi marta qachon normal bo'lganini eslab qoling.",
+                "Kutayotganda ovqat, ichimlik yoki dori bermang.",
+            ],
+            "cardiac": [
+                "Har qanday jismoniy harakatni to'xtating va odamni o'tqizing.",
+                "Og'riq kuchli, tarqalayotgan yoki nafas qisilishi bilan bo'lsa, hozir tez yordam chaqiring.",
+                "Agar hushsiz bo'lib nafas olmay qolsa, bilsangiz CPR boshlang.",
+            ],
+            "breathing": [
+                "Hozirning o'zida tez yordam chaqiring.",
+                "Odamni tik o'tqazing va siqib turgan kiyimlarini bo'shating.",
+                "Agar nafas to'xtasa, bilsangiz CPR boshlang.",
+            ],
+            "anaphylaxis": [
+                "Agar epinefrin auto-inyektori bo'lsa, darhol ishlating.",
+                "Aholi yaxshilangandek tuyulsa ham tez yordam chaqiring.",
+                "Nafas olishi yomon bo'lmasa, yotqizib turing.",
+            ],
+            "seizure": [
+                "Atrofdagi qattiq buyumlarni uzoqlashtirib, boshini himoya qiling.",
+                "Uni ushlab turmang va og'ziga hech narsa solmang.",
+                "Talvasa 5 daqiqadan oshsa, qaytalansa yoki to'liq o'ziga kelmasa tez yordam chaqiring.",
+            ],
+            "overdose": [
+                "Darhol tez yordam chaqiring.",
+                "Odam bilan birga qoling va dorilar, alkogol, o'tkir buyumlar yoki qurollarni olib tashlang.",
+                "Agar nafas olayotgan bo'lsa-yu uyquchan bo'lsa, yonboshiga yotqizing.",
+            ],
+            "severe_bleeding": [
+                "Jarohatni toza mato yoki bint bilan qattiq bosing.",
+                "Bosimni ushlab turing va tez-tez ochib tekshirmang.",
+                "Qon ko'p bo'lsa yoki to'xtamasa, hozir tez yordam chaqiring.",
+            ],
+            "head_injury": [
+                "Dam oldiring, sport, alkogol va mashina haydashni to'xtating.",
+                "Hushdan ketish, qayta-qayta qusish, chalkashlik yoki og'riq kuchaysa zudlik bilan shifokorga olib boring.",
+                "Bo'yin jarohati ehtimoli bo'lsa, bosh va bo'yinni qimirlatmang.",
+            ],
+            "fracture": [
+                "Jarohatlangan joyni qimirlatmang va to'g'rilashga urinmang.",
+                "Mato bilan o'ralgan sovuq kompressni 15-20 daqiqa qo'ying.",
+                "Shoshilinch ko'rikka boring, suyak chiqib turgan, joy ko'kargan yoki uvishgan bo'lsa tez yordam chaqiring.",
+            ],
+            "burn": [
+                "Kuygan joyni 20 daqiqa davomida salqin oqar suv ostida sovuting.",
+                "Uzuk yoki qattiq buyumlarni erta yeching, lekin yopishib qolgan kiyimni tortmang.",
+                "Katta, chuqur, yuz, qo'l, oyoq, jinsiy a'zo yoki elektr kuyishida zudlik bilan yordam oling.",
+            ],
+            "stomach_severe": [
+                "Og'riq kuchli bo'lsa og'ir ovqat yemang.",
+                "Qusmayotgan bo'lsangiz oz-ozdan suv iching.",
+                "Og'riq kuchli, bir tomonda yoki kuchayib borayotgan bo'lsa darhol ko'rikka boring.",
+            ],
+            "vomiting": [
+                "Oz-ozdan tez-tez suv yoki rehidratatsiya eritmasi iching.",
+                "Hozircha yog'li ovqat, alkogol va katta porsiyadan saqlaning.",
+                "Suyuqlikni ushlab turolmasangiz, juda holsiz bo'lsangiz yoki qon ko'rinsa shu kunning o'zida ko'rikka boring.",
+            ],
+            "urinary": [
+                "Agar suyuqlik cheklovi aytilmagan bo'lsa, suv iching.",
+                "Isitma, bel og'rig'i yoki siydikda qon bo'lsa kutmang.",
+                "Shunday belgilar bo'lsa shu kunning o'zida ko'rikka boring.",
+            ],
+            "rash": [
+                "Tetiklagan bo'lishi mumkin bo'lgan yangi krem, sovun, kosmetika yoki dorini to'xtating.",
+                "Terini toza saqlang va qashimang.",
+                "Yuz shishi, nafas qisilishi, isitma yoki kuchli og'riq bo'lsa zudlik bilan yordam oling.",
+            ],
+            "fever": [
+                "Ko'proq suyuqlik iching va salqin xonada dam oling.",
+                "Haroratni va necha kundan beri borligini kuzating.",
+                "Isitma baland bo'lsa, 48 soatdan oshsa yoki nafas qisilishi, chalkashlik, suvsizlanish bilan kelsa shu kunning o'zida ko'rikka boring.",
+            ],
+            "headache": [
+                "Tinch va qorong'i joyda dam oling, suv iching.",
+                "Bosh aylanishi yoki ko'rish buzilishi bo'lsa mashina haydamang.",
+                "Hayotingizdagi eng kuchli bosh og'rig'i bo'lsa, to'satdan boshlangan bo'lsa yoki holsizlik, qusish, chalkashlik bilan bo'lsa darhol yordam oling.",
+            ],
+            "back_strain": [
+                "Bugun ko'tarish, egilish va burilishni kamaytiring.",
+                "Yangi jarohatda sovuq, keyinroq qotishishda issiq qo'llang.",
+                "Holsizlik, karaxtlik, siyishni ushlay olmaslik yoki katta travma bo'lsa tezroq ko'rikka boring.",
+            ],
+            "cold_flu": [
+                "Dam oling, suyuqlik iching va isitma hamda tomoq bezovtaligini yengillashtiring.",
+                "Chekishdan saqlaning va yo'tal hamda nafasni kuzating.",
+                "Nafas qisilsa, ko'krak og'risa yoki isitma kuchaysa tezroq ko'rikka boring.",
+            ],
+        },
+    }
+    lang = language if language in steps else "en"
+    if not scenario:
+        return []
+    return steps[lang].get(scenario, [])
+
+
 def symptom_specific_advice(language: str, specialty: str, lowered: str, urgency: str) -> str:
+    scenario = detect_instruction_scenario(lowered)
+    scenario_text = scenario_specific_advice(language, scenario)
+    if scenario_text:
+        if urgency == "medium":
+            return f"{scenario_text} {default_text(language, 'same_day_step')}"
+        return scenario_text
+
     advice = {
         "en": {
             "cardiologist": "Chest symptoms need prompt medical assessment, especially if they are new, stronger than usual, or come with shortness of breath.",
@@ -1290,6 +1866,11 @@ def symptom_specific_advice(language: str, specialty: str, lowered: str, urgency
 
 
 def symptom_specific_steps(language: str, specialty: str, lowered: str, urgency: str) -> List[str]:
+    scenario = detect_instruction_scenario(lowered)
+    scenario_steps = scenario_specific_steps(language, scenario)
+    if scenario_steps:
+        return scenario_steps
+
     steps = {
         "en": {
             "cardiologist": [
@@ -1512,9 +2093,14 @@ def heuristic_triage(message: str, language: str) -> dict:
 
     urgent = is_emergency(lowered)
     reason = emergency_reason(lowered)
+    scenario = detect_instruction_scenario(lowered)
     urgency = "high" if urgent else "low"
+    scenario_level = scenario_urgency(scenario)
+    if scenario_level == "high":
+        urgency = "high"
+    elif scenario_level == "medium" and urgency != "high":
+        urgency = "medium"
     severity_score = extract_severity_score(lowered)
-    duration_category = extract_duration_category(lowered)
 
     if not urgent and (any(hint in lowered for hint in MEDIUM_URGENCY_HINTS) or (severity_score is not None and severity_score >= 7)):
         urgency = "medium"
@@ -1530,16 +2116,10 @@ def heuristic_triage(message: str, language: str) -> dict:
 
     next_steps = symptom_specific_steps(language, specialty, lowered, urgency)
     if urgency == "high":
-        next_steps = [default_text(language, "urgent_step"), *next_steps]
+        next_steps = emergency_dispatch_steps(language, reason) + next_steps
 
     follow_up_questions = symptom_follow_up_questions(language, bucket)
-    severity_level = extract_severity_level(lowered, severity_score, urgency)
-    summary = emergency_summary(language, reason) if urgent else contextualize_summary(
-        language,
-        symptom_bucket_summary(language, bucket) or default_text(language, "fallback_summary"),
-        severity_level,
-        duration_category,
-    )
+    summary = emergency_summary(language, reason) if urgent else (symptom_bucket_summary(language, bucket) or default_text(language, "fallback_summary"))
     advice = emergency_advice(language, reason) if urgent else (symptom_bucket_advice(language, bucket, urgency) or symptom_specific_advice(language, specialty, lowered, urgency))
     likely_condition = symptom_bucket_likely_condition(language, bucket)
 
@@ -1556,6 +2136,127 @@ def heuristic_triage(message: str, language: str) -> dict:
     }
 
 
+def rapidapi_specialization(specialty: str) -> str:
+    normalized = normalize_specialty(specialty)
+    mapping = {
+        "general practitioner": "general",
+        "cardiologist": "cardiology",
+        "neurologist": "neurology",
+        "dermatologist": "dermatology",
+        "pediatrician": "pediatrics",
+        "psychiatrist": "psychiatry",
+        "orthopedist": "orthopedics",
+    }
+    return mapping.get(normalized, "general")
+
+
+def build_first_aid_message(message: str, language: str, urgency_level: str, specialty: str) -> str:
+    language_name = LANG_MAP.get(language, "English")
+    return (
+        f"Patient symptoms: {message}\n"
+        f"Language for reply: {language_name}.\n"
+        f"Specialty focus: {specialty or 'general'}.\n"
+        f"Assessed urgency: {urgency_level}.\n"
+        "Your PRIMARY role is to provide a very brief, helpful response.\n"
+        "Follow these rules STRICTLY:\n"
+        "1. Give ONLY 1-2 short sentences of advice or first-aid.\n"
+        "2. DO NOT use bullet points, lists, or multiple paragraphs.\n"
+        "3. DO NOT include any other information besides the 1-2 sentences."
+    )
+
+
+def request_gemini_doctor(message: str, language: str, urgency_level: str, specialty: str) -> str:
+    if genai is None or not GEMINI_API_KEY:
+        return ""
+
+    prompt = build_first_aid_message(message, language, urgency_level, specialty)
+
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+        )
+    except Exception:
+        return ""
+
+    text = getattr(response, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    return ""
+
+
+def extract_rapidapi_reply(payload: object) -> str:
+    if isinstance(payload, str):
+        return payload.strip()
+
+    if isinstance(payload, list):
+        for item in payload:
+            text = extract_rapidapi_reply(item)
+            if text:
+                return text
+        return ""
+
+    if isinstance(payload, dict):
+        for key in (
+            "response",
+            "reply",
+            "message",
+            "output",
+            "answer",
+            "text",
+            "result",
+            "content",
+        ):
+            value = payload.get(key)
+            text = extract_rapidapi_reply(value)
+            if text:
+                return text
+    return ""
+
+
+def request_rapidapi_doctor(message: str, language: str, urgency_level: str, specialty: str) -> str:
+    if not RAPIDAPI_KEY:
+        return ""
+
+    payload = json.dumps(
+        {
+            "message": build_first_aid_message(message, language, urgency_level, specialty),
+            "specialization": rapidapi_specialization(specialty),
+            "language": language if language in LANG_MAP else "en",
+        }
+    )
+
+    connection = http.client.HTTPSConnection(RAPIDAPI_HOST, timeout=45)
+    try:
+        connection.request(
+            "POST",
+            "/chat?noqueue=1",
+            payload,
+            {
+                "x-rapidapi-host": RAPIDAPI_HOST,
+                "x-rapidapi-key": RAPIDAPI_KEY,
+                "Content-Type": "application/json",
+            },
+        )
+        response = connection.getresponse()
+        body = response.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return ""
+    finally:
+        connection.close()
+
+    if response.status >= 400:
+        return ""
+
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return body.strip()
+
+    return extract_rapidapi_reply(parsed)
+
+
 def rank_doctors(doctors: List[models.Doctor], specialty: str, urgency_level: str) -> List[models.Doctor]:
     normalized = normalize_specialty(specialty)
 
@@ -1569,10 +2270,103 @@ def rank_doctors(doctors: List[models.Doctor], specialty: str, urgency_level: st
     return sorted(doctors, key=score, reverse=True)
 
 
+def localized_specialty_name(language: str, specialty: str) -> str:
+    labels = {
+        "en": {
+            "general practitioner": "General Practitioner",
+            "cardiologist": "Cardiologist",
+            "neurologist": "Neurologist",
+            "dermatologist": "Dermatologist",
+            "pediatrician": "Pediatrician",
+            "psychiatrist": "Psychiatrist",
+            "orthopedist": "Orthopedist",
+        },
+        "ru": {
+            "general practitioner": "Врач общей практики",
+            "cardiologist": "Кардиолог",
+            "neurologist": "Невролог",
+            "dermatologist": "Дерматолог",
+            "pediatrician": "Педиатр",
+            "psychiatrist": "Психиатр",
+            "orthopedist": "Ортопед",
+        },
+        "uz": {
+            "general practitioner": "Umumiy amaliyot shifokori",
+            "cardiologist": "Kardiolog",
+            "neurologist": "Nevrolog",
+            "dermatologist": "Dermatolog",
+            "pediatrician": "Pediatr",
+            "psychiatrist": "Psixiatr",
+            "orthopedist": "Ortoped",
+        },
+    }
+    lang = language if language in labels else "en"
+    return labels[lang].get(specialty, specialty.title())
+
+
+def facility_description(language: str, facility_type: str, specialty: str, location: str, rating: float) -> str:
+    specialty_label = localized_specialty_name(language, specialty)
+    texts = {
+        "en": {
+            "clinic": f"Good for {specialty_label.lower()} visits near {location}. Average patient rating is {rating:.1f}.",
+            "hospital": f"Strong option for {specialty_label.lower()} care near {location} with a {rating:.1f} rating.",
+        },
+        "ru": {
+            "clinic": f"Подходит для визита к {specialty_label.lower()} рядом с {location}. Средняя оценка пациентов {rating:.1f}.",
+            "hospital": f"Надёжный вариант для помощи по направлению {specialty_label.lower()} рядом с {location}, рейтинг {rating:.1f}.",
+        },
+        "uz": {
+            "clinic": f"{location} yaqinida {specialty_label.lower()} qabuliga mos klinika. Bemorlar reytingi {rating:.1f}.",
+            "hospital": f"{location} yaqinida {specialty_label.lower()} yo'nalishi uchun kuchli shifoxona, reytingi {rating:.1f}.",
+        },
+    }
+    lang = language if language in texts else "en"
+    return texts[lang][facility_type]
+
+
+def rank_facilities(facilities: List[dict], specialty: str, urgency_level: str) -> List[dict]:
+    normalized = normalize_specialty(specialty)
+
+    def score(item: dict) -> float:
+        specialties = item.get("specialties", [])
+        specialty_bonus = 2.5 if normalized in specialties else 0.0
+        distance = float(item.get("distance", 0))
+        rating = float(item.get("rating", 0))
+        if urgency_level == "high":
+            return specialty_bonus + (10 - min(distance, 10)) + rating
+        return specialty_bonus + rating + (5 - min(distance, 5))
+
+    return sorted(facilities, key=score, reverse=True)
+
+
+def build_facility_recommendations(language: str, specialty: str, urgency_level: str, is_premium: bool) -> tuple[List[FacilitySchema], List[FacilitySchema]]:
+    limit = 4 if is_premium else 2
+    clinics = rank_facilities(FACILITY_CATALOG["clinics"], specialty, urgency_level)[:limit]
+    hospitals = rank_facilities(FACILITY_CATALOG["hospitals"], specialty, urgency_level)[:limit]
+
+    def to_schema(item: dict, facility_type: str) -> FacilitySchema:
+        return FacilitySchema(
+            id=int(item["id"]),
+            name=str(item["name"]),
+            facility_type=facility_type,
+            specialty_focus=localized_specialty_name(language, specialty),
+            rating=float(item["rating"]),
+            location=str(item["location"]),
+            distance=float(item["distance"]),
+            reservation_fee=int(item["reservation_fee"]),
+            description=facility_description(language, facility_type, specialty, str(item["location"]), float(item["rating"])),
+        )
+
+    return (
+        [to_schema(item, "clinic") for item in clinics],
+        [to_schema(item, "hospital") for item in hospitals],
+    )
+
+
 def apply_premium_limits(next_steps: List[str], follow_up_questions: List[str], is_premium: bool) -> tuple[List[str], List[str]]:
     if is_premium:
-        return next_steps[:4], follow_up_questions[:3]
-    return next_steps[:2], follow_up_questions[:1]
+        return next_steps[:5], follow_up_questions[:3]
+    return next_steps[:3], follow_up_questions[:2]
 
 
 @app.post("/auth/signup", response_model=AuthResponse)
@@ -1862,6 +2656,35 @@ def list_doctor_consultations(doctor_id: int, db: Session = Depends(database.get
     return serialized
 
 
+@app.get("/predict/metadata")
+def predict_metadata(language: str = "en"):
+    normalized_language = language if language in {"en", "uz"} else "en"
+    symptoms = [
+        {
+            "key": symptom_key,
+            "label": localize_label(SYMPTOM_LABELS, symptom_key, normalized_language),
+        }
+        for symptom_key in disease_prediction_service.feature_columns
+    ]
+
+    return {
+        "symptoms": symptoms,
+        "supported_languages": ["en", "uz"],
+        "model_name": disease_prediction_service.model_name,
+        "metrics": disease_prediction_service.metrics,
+    }
+
+
+@app.post("/predict", response_model=PredictResponse)
+def predict_disease(req: PredictRequest):
+    if not req.symptoms and not req.text.strip():
+        raise HTTPException(status_code=400, detail="Provide at least one symptom or a free-text description.")
+
+    normalized_language = req.language if req.language in {"en", "uz"} else "en"
+    result = disease_prediction_service.predict(req.symptoms, req.text, normalized_language)
+    return PredictResponse(**result)
+
+
 @app.post("/chat", response_model=ChatResponse)
 def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
     print(f"[Chat] mode={TRIAGE_MODE} lang={req.language} premium={req.is_premium} msg={req.message[:80]}")
@@ -1881,23 +2704,14 @@ def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
     if urgency_level not in {"low", "medium", "high"}:
         urgency_level = "high" if hard_urgent else "low"
 
-    summary = str(triage.get("summary", "")).strip() or default_text(req.language, "fallback_summary")
-    advice = shorten_advice(str(triage.get("advice", "")).strip() or default_text(req.language, "fallback_reply"))
-    next_steps = triage.get("next_steps") or []
-    follow_up_questions = triage.get("follow_up_questions") or []
-
     is_urgent = hard_urgent or urgency_level == "high"
     if hard_urgent:
-        summary = emergency_summary(req.language, hard_urgent_reason)
-        advice = shorten_advice(emergency_advice(req.language, hard_urgent_reason))
         urgency_level = "high"
-        specialty_extracted = "general practitioner" if hard_urgent_reason in {"trauma", "overdose", "pregnancy", "infant"} else specialty_extracted
-        follow_up_questions = []
-    if is_urgent and default_text(req.language, "urgent_step") not in next_steps:
-        next_steps = [default_text(req.language, "urgent_step"), *next_steps]
+        if hard_urgent_reason in {"trauma", "overdose", "pregnancy", "infant"} or not specialty_extracted:
+            specialty_extracted = "general practitioner"
 
-    limit = 6 if req.is_premium else 2
-    next_steps, follow_up_questions = apply_premium_limits(next_steps, follow_up_questions, req.is_premium)
+    summary = str(triage.get("summary", "")).strip() or default_text(req.language, "fallback_summary")
+    advice = str(triage.get("advice", "")).strip() or default_text(req.language, "fallback_reply")
     likely_condition = str(triage.get("likely_condition", "")).strip()
     if not likely_condition and specialty_extracted:
         likely_condition = likely_condition_text(req.language, specialty_extracted, hard_urgent_reason, is_urgent)
@@ -1907,9 +2721,19 @@ def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
         prevention_tips = prevention_tips_text(req.language, specialty_extracted, is_urgent)
 
     emergency_warning = emergency_advice(req.language, hard_urgent_reason) if is_urgent else ""
-    doctors_list: List[DoctorSchema] = []
+    next_steps = triage.get("next_steps") or []
+    follow_up_questions = triage.get("follow_up_questions") or []
+    if is_urgent:
+        dispatch_steps = emergency_dispatch_steps(req.language, hard_urgent_reason)
+        next_steps = dispatch_steps + [step for step in next_steps if step not in dispatch_steps]
 
-    if specialty_extracted:
+    limit = 6 if req.is_premium else 2
+    next_steps, follow_up_questions = apply_premium_limits(next_steps, follow_up_questions, req.is_premium)
+    doctors_list: List[DoctorSchema] = []
+    clinics_list: List[FacilitySchema] = []
+    hospitals_list: List[FacilitySchema] = []
+
+    if specialty_extracted and not is_urgent:
         specialty_matches = (
             db.query(models.Doctor)
             .filter(models.Doctor.is_authorized.is_(True))
@@ -1940,8 +2764,36 @@ def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
             )
             for doctor in ranked_doctors
         ]
+        clinics_list, hospitals_list = build_facility_recommendations(
+            req.language,
+            specialty_extracted,
+            urgency_level,
+            req.is_premium,
+        )
 
-    reply = advice
+    reply = request_gemini_doctor(
+        req.message,
+        req.language,
+        urgency_level,
+        specialty_extracted or "general practitioner",
+    )
+    if not reply:
+        reply = request_rapidapi_doctor(
+            req.message,
+            req.language,
+            urgency_level,
+            specialty_extracted or "general practitioner",
+        )
+    if not reply:
+        reply = compose_reply(
+            req.language,
+            req.message,
+            summary,
+            advice,
+            next_steps,
+            follow_up_questions,
+            is_urgent,
+        )
 
     if req.user_id:
         db.add(models.Message(user_id=req.user_id, role="ai", content=reply))
@@ -1958,6 +2810,8 @@ def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
         next_steps=next_steps,
         follow_up_questions=follow_up_questions,
         doctors=doctors_list,
+        clinics=clinics_list,
+        hospitals=hospitals_list,
         urgent=is_urgent,
     )
 

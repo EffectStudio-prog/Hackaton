@@ -16,6 +16,7 @@ import BarChartCard, { BarDatum } from './BarChartCard'
 import PieChartCard, { PieDatum } from './PieChartCard'
 import StatsCard from './StatsCard'
 import Table, { RecentSearchRow } from './Table'
+import { loadPremiumConfig, savePremiumConfig } from '../../utils/premiumConfig'
 
 type SymptomCategory = 'Fever' | 'Headache' | 'Stomach Pain' | 'Cold/Flu' | 'Other'
 type DateRange = '7d' | '30d' | '90d'
@@ -38,11 +39,23 @@ interface StoredConversation {
   preview?: string
   updatedAt?: number
   messages?: StoredMessage[]
+  ownerUserId?: number | null
+  ownerUsername?: string
+  ownerEmail?: string
+}
+
+interface StoredUser {
+  id: number
+  username: string
+  email: string
+  is_premium: boolean
 }
 
 interface SearchEntry {
   id: string
   userId: string
+  username: string
+  email: string
   symptom: string
   category: SymptomCategory
   aiSuggestion: string
@@ -53,6 +66,7 @@ interface SearchEntry {
 }
 
 const CHAT_HISTORY_KEY = 'mydoctor-chat-history'
+const LOCAL_USER_KEY = 'mydoctor-local-users'
 const CATEGORY_ORDER: SymptomCategory[] = ['Fever', 'Headache', 'Stomach Pain', 'Cold/Flu', 'Other']
 const CATEGORY_COLORS: Record<SymptomCategory, string> = {
   Fever: '#38bdf8',
@@ -113,6 +127,25 @@ const copy = {
     csvCategory: 'Category',
     csvSuggestion: 'Triage Guidance',
     csvDoctorType: 'Doctor Type',
+    searchUsers: 'Search by username',
+    searchUsersPlaceholder: 'Search username...',
+    userProfileTitle: 'User profile search',
+    userProfileSubtitle: 'Find a user and inspect what symptoms they usually type and which doctor is recommended most often.',
+    noUserFound: 'No user matched this username yet.',
+    profileUsername: 'Username',
+    profileEmail: 'Email',
+    profileSearchCount: 'Total searches',
+    profileTopSymptoms: 'Most common symptoms',
+    profileTopDoctor: 'Most referred doctor',
+    profilePremium: 'Premium',
+    profileRegular: 'Regular',
+    premiumPricingTitle: 'Premium pricing',
+    premiumPricingSubtitle: 'Update the Premium monthly and yearly prices from admin.',
+    premiumMonthlyPlaceholder: 'Monthly price',
+    premiumYearlyPlaceholder: 'Yearly price',
+    premiumPricingSave: 'Save premium pricing',
+    premiumPricingInvalid: 'Enter valid premium prices first.',
+    premiumPricingSaved: 'Premium pricing updated.',
   },
   ru: {
     badge: 'ÐÐ´Ð¼Ð¸Ð½ Ð°Ð½Ð°Ð»Ð¸Ñ‚Ð¸ÐºÐ°',
@@ -162,6 +195,25 @@ const copy = {
     csvCategory: 'ÐšÐ°Ñ‚ÐµÐ³Ð¾Ñ€Ð¸Ñ',
     csvSuggestion: 'Ð ÐµÐºÐ¾Ð¼ÐµÐ½Ð´Ð°Ñ†Ð¸Ð¸ ÑÐ¾Ñ€Ñ‚Ð¸Ñ€Ð¾Ð²ÐºÐ¸',
     csvDoctorType: 'Ð¢Ð¸Ð¿ Ð²Ñ€Ð°Ñ‡Ð°',
+    searchUsers: 'Поиск по username',
+    searchUsersPlaceholder: 'Введите username...',
+    userProfileTitle: 'Поиск профиля пользователя',
+    userProfileSubtitle: 'Найдите пользователя и посмотрите, какие симптомы он пишет чаще всего и какой врач рекомендуется ему чаще.',
+    noUserFound: 'Пользователь с таким username пока не найден.',
+    profileUsername: 'Username',
+    profileEmail: 'Email',
+    profileSearchCount: 'Всего поисков',
+    profileTopSymptoms: 'Самые частые симптомы',
+    profileTopDoctor: 'Самый частый рекомендованный врач',
+    profilePremium: 'Премиум',
+    profileRegular: 'Обычный',
+    premiumPricingTitle: 'Цена Premium',
+    premiumPricingSubtitle: 'Обновляйте месячную и годовую цену Premium из admin панели.',
+    premiumMonthlyPlaceholder: 'Цена за месяц',
+    premiumYearlyPlaceholder: 'Цена за год',
+    premiumPricingSave: 'Сохранить цену Premium',
+    premiumPricingInvalid: 'Сначала введите корректные цены Premium.',
+    premiumPricingSaved: 'Цена Premium обновлена.',
   },
   uz: {
     badge: 'Admin analitika',
@@ -211,6 +263,25 @@ const copy = {
     csvCategory: 'Kategoriya',
     csvSuggestion: 'Triage tavsiyasi',
     csvDoctorType: 'Shifokor turi',
+    searchUsers: 'Username bo‘yicha qidirish',
+    searchUsersPlaceholder: 'Username kiriting...',
+    userProfileTitle: 'Foydalanuvchi profili qidiruvi',
+    userProfileSubtitle: 'Userni toping va u asosan qaysi simptomlarni yozayotgani hamda qaysi doctor ko‘proq tavsiya qilinayotganini ko‘ring.',
+    noUserFound: 'Bu username bo‘yicha hozircha foydalanuvchi topilmadi.',
+    profileUsername: 'Username',
+    profileEmail: 'Email',
+    profileSearchCount: 'Jami qidiruvlar',
+    profileTopSymptoms: 'Eng ko‘p yozilgan simptomlar',
+    profileTopDoctor: 'Eng ko‘p tavsiya qilingan doctor',
+    profilePremium: 'Premium',
+    profileRegular: 'Oddiy',
+    premiumPricingTitle: 'Premium narxi',
+    premiumPricingSubtitle: 'Premium oylik va yillik narxini admin paneldan yangilang.',
+    premiumMonthlyPlaceholder: 'Oylik narx',
+    premiumYearlyPlaceholder: 'Yillik narx',
+    premiumPricingSave: 'Premium narxini saqlash',
+    premiumPricingInvalid: 'Avval to‘g‘ri Premium narxlarini kiriting.',
+    premiumPricingSaved: 'Premium narxi yangilandi.',
   },
 } as const
 
@@ -221,6 +292,17 @@ interface DashboardProps {
 const loadLocalHistory = (): StoredConversation[] => {
   try {
     const raw = localStorage.getItem(CHAT_HISTORY_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+const loadStoredUsers = (): StoredUser[] => {
+  try {
+    const raw = localStorage.getItem(LOCAL_USER_KEY)
     if (!raw) return []
     const parsed = JSON.parse(raw)
     return Array.isArray(parsed) ? parsed : []
@@ -242,6 +324,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onBack }) => {
   const [dateRange, setDateRange] = useState<DateRange>('7d')
   const [category, setCategory] = useState<SymptomCategory | 'All'>('All')
   const [isLoading, setIsLoading] = useState(true)
+  const [usernameQuery, setUsernameQuery] = useState('')
+  const [premiumForm, setPremiumForm] = useState(() => ({
+    monthlyPrice: loadPremiumConfig().monthlyPrice.toFixed(2),
+    yearlyPrice: loadPremiumConfig().yearlyPrice.toFixed(2),
+  }))
+  const [premiumMessage, setPremiumMessage] = useState('')
 
   const language = ((i18n.resolvedLanguage || i18n.language || 'en').split('-')[0] as DashboardLanguage)
   const text = copy[language] ?? copy.en
@@ -302,13 +390,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onBack }) => {
     mostCommonSymptom,
     topSymptoms,
     dailySearches,
+    allEntries,
     filteredEntries,
     doctorReferralCount,
     activeUsers,
     premiumUserCount,
     premiumSearchesCount,
+    registeredUsers,
   } = useMemo(() => {
     const history = loadLocalHistory()
+    const users = loadStoredUsers()
     const now = new Date()
     const rangeDays = dateRange === '7d' ? 7 : dateRange === '30d' ? 30 : 90
     const rangeStart = new Date(now)
@@ -318,7 +409,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onBack }) => {
     const entriesRaw: SearchEntry[] = []
     history.forEach(conversation => {
       const baseTime = conversation.updatedAt ?? Date.now()
-      const userId = hashToUserId(conversation.id || String(baseTime))
+      const userId = conversation.ownerUserId ? `USR-${String(conversation.ownerUserId).padStart(4, '0')}` : hashToUserId(conversation.id || String(baseTime))
+      const fallbackUsername = conversation.ownerUsername || users.find(user => user.id === conversation.ownerUserId)?.username || `guest-${userId.toLowerCase()}`
+      const fallbackEmail = conversation.ownerEmail || users.find(user => user.id === conversation.ownerUserId)?.email || ''
       const messages = conversation.messages ?? []
 
       messages.forEach((message, index) => {
@@ -328,6 +421,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onBack }) => {
         entriesRaw.push({
           id: `${conversation.id}-${message.id}`,
           userId,
+          username: fallbackUsername,
+          email: fallbackEmail,
           symptom: message.content,
           category: classifySymptom(message.content),
           aiSuggestion: nextAi?.summary || nextAi?.content || '',
@@ -404,14 +499,70 @@ const Dashboard: React.FC<DashboardProps> = ({ onBack }) => {
       totalSearches: filteredByCategory.length,
       mostCommonSymptom: translateCategory(topCategory),
       topSymptoms: topList,
+      allEntries: entriesRaw,
       dailySearches: bars,
       filteredEntries: filteredByCategory,
       doctorReferralCount: referrals,
       activeUsers: activeUserCount,
       premiumUserCount: premiumUsers,
       premiumSearchesCount: premiumSearches,
+      registeredUsers: users,
     }
   }, [category, dateRange, language])
+
+  const matchedUserProfile = useMemo(() => {
+    const normalizedQuery = usernameQuery.trim().toLowerCase()
+    if (!normalizedQuery) return null
+
+    const matchedUser = registeredUsers.find(user => user.username.toLowerCase().includes(normalizedQuery))
+    const matchedEntries = allEntries.filter(entry => entry.username.toLowerCase().includes(normalizedQuery))
+    if (!matchedUser && matchedEntries.length === 0) {
+      return null
+    }
+
+    const username = matchedUser?.username || matchedEntries[0]?.username || normalizedQuery
+    const email = matchedUser?.email || matchedEntries[0]?.email || '-'
+    const symptomCounts = matchedEntries.reduce((acc, entry) => {
+      const key = entry.symptom.trim() || entry.category
+      acc[key] = (acc[key] || 0) + 1
+      return acc
+    }, {} as Record<string, number>)
+    const doctorCounts = matchedEntries.reduce((acc, entry) => {
+      const key = entry.doctorType || text.doctorGeneral
+      acc[key] = (acc[key] || 0) + 1
+      return acc
+    }, {} as Record<string, number>)
+
+    const topSymptomsForUser = Object.entries(symptomCounts)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 3)
+      .map(([symptom, count]) => `${symptom} (${count})`)
+
+    const topDoctor = Object.entries(doctorCounts)
+      .sort((left, right) => right[1] - left[1])[0]?.[0] || '-'
+
+    return {
+      username,
+      email,
+      searchCount: matchedEntries.length,
+      topSymptoms: topSymptomsForUser,
+      topDoctor: translateDoctorType(topDoctor),
+      isPremium: matchedUser?.is_premium ?? false,
+    }
+  }, [allEntries, registeredUsers, text.doctorGeneral, usernameQuery])
+
+  const handleSavePremiumPricing = () => {
+    const monthlyPrice = Number(premiumForm.monthlyPrice)
+    const yearlyPrice = Number(premiumForm.yearlyPrice)
+
+    if (!Number.isFinite(monthlyPrice) || monthlyPrice <= 0 || !Number.isFinite(yearlyPrice) || yearlyPrice <= 0) {
+      setPremiumMessage(text.premiumPricingInvalid)
+      return
+    }
+
+    savePremiumConfig({ monthlyPrice, yearlyPrice })
+    setPremiumMessage(text.premiumPricingSaved)
+  }
 
   const exportCsv = () => {
     const headers = [
@@ -451,7 +602,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onBack }) => {
       .slice(0, 8)
       .map(entry => ({
         id: entry.id,
-        userId: entry.userId,
+        userId: `${entry.username} (${entry.userId})`,
         symptom: entry.symptom,
         category: translateCategory(entry.category),
         aiSuggestion: entry.aiSuggestion || '-',
@@ -619,6 +770,92 @@ const Dashboard: React.FC<DashboardProps> = ({ onBack }) => {
             </div>
 
             <div className="space-y-5">
+              <div className="rounded-3xl border border-white/60 bg-white/85 p-5 shadow-xl shadow-slate-200/60 dark:border-slate-700/70 dark:bg-slate-900/75 dark:shadow-none">
+                <p className="text-sm font-semibold text-slate-900 dark:text-white">{text.userProfileTitle}</p>
+                <p className="mt-1 text-xs leading-6 text-slate-500 dark:text-slate-400">
+                  {text.userProfileSubtitle}
+                </p>
+
+                <label className="relative mt-4 block">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    value={usernameQuery}
+                    onChange={event => setUsernameQuery(event.target.value)}
+                    placeholder={text.searchUsersPlaceholder}
+                    className="input-field w-full pl-10 pr-4 py-3 text-sm"
+                  />
+                </label>
+
+                {!usernameQuery.trim() ? (
+                  <p className="mt-4 text-sm text-slate-500 dark:text-slate-400">
+                    {text.searchUsers}
+                  </p>
+                ) : !matchedUserProfile ? (
+                  <p className="mt-4 text-sm text-slate-500 dark:text-slate-400">
+                    {text.noUserFound}
+                  </p>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    <div className="rounded-2xl border border-slate-200/80 bg-slate-50/90 px-4 py-3 dark:border-slate-700/80 dark:bg-slate-800/70">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">{text.profileUsername}</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{matchedUserProfile.username}</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200/80 bg-slate-50/90 px-4 py-3 dark:border-slate-700/80 dark:bg-slate-800/70">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">{text.profileEmail}</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{matchedUserProfile.email}</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200/80 bg-slate-50/90 px-4 py-3 dark:border-slate-700/80 dark:bg-slate-800/70">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">{text.profileSearchCount}</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{matchedUserProfile.searchCount}</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200/80 bg-slate-50/90 px-4 py-3 dark:border-slate-700/80 dark:bg-slate-800/70">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">{text.profileTopSymptoms}</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                        {matchedUserProfile.topSymptoms.join(', ') || '-'}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200/80 bg-slate-50/90 px-4 py-3 dark:border-slate-700/80 dark:bg-slate-800/70">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">{text.profileTopDoctor}</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{matchedUserProfile.topDoctor}</p>
+                    </div>
+                    <div className="inline-flex rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700 dark:bg-brand-900/30 dark:text-brand-300">
+                      {matchedUserProfile.isPremium ? text.profilePremium : text.profileRegular}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-3xl border border-white/60 bg-white/85 p-5 shadow-xl shadow-slate-200/60 dark:border-slate-700/70 dark:bg-slate-900/75 dark:shadow-none">
+                <p className="text-sm font-semibold text-slate-900 dark:text-white">{text.premiumPricingTitle}</p>
+                <p className="mt-1 text-xs leading-6 text-slate-500 dark:text-slate-400">
+                  {text.premiumPricingSubtitle}
+                </p>
+                <div className="mt-4 grid grid-cols-2 gap-3">
+                  <input
+                    value={premiumForm.monthlyPrice}
+                    onChange={event => setPremiumForm(previous => ({ ...previous, monthlyPrice: event.target.value }))}
+                    className="input-field text-sm"
+                    placeholder={text.premiumMonthlyPlaceholder}
+                    inputMode="decimal"
+                  />
+                  <input
+                    value={premiumForm.yearlyPrice}
+                    onChange={event => setPremiumForm(previous => ({ ...previous, yearlyPrice: event.target.value }))}
+                    className="input-field text-sm"
+                    placeholder={text.premiumYearlyPlaceholder}
+                    inputMode="decimal"
+                  />
+                </div>
+                <button onClick={handleSavePremiumPricing} className="btn-primary mt-4 w-full">
+                  {text.premiumPricingSave}
+                </button>
+                {premiumMessage && (
+                  <p className="mt-3 text-xs leading-5 text-emerald-600 dark:text-emerald-300">
+                    {premiumMessage}
+                  </p>
+                )}
+              </div>
+
               <div className="rounded-3xl border border-white/60 bg-white/85 p-5 shadow-xl shadow-slate-200/60 dark:border-slate-700/70 dark:bg-slate-900/75 dark:shadow-none">
                 <div className="inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
                   <Activity className="w-3.5 h-3.5" />
