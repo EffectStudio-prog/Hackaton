@@ -138,6 +138,8 @@ const loadLocalDoctors = (): StoredDoctorRecord[] => {
 
 const buildLocalDoctorRecommendations = (specialty?: string): Doctor[] => {
   const requestedSpecialty = normalizeText(specialty)
+  if (!requestedSpecialty) return []
+
   const registeredDoctors = loadLocalDoctors()
 
   const mappedDoctors = registeredDoctors.map((doctor, index) => ({
@@ -150,15 +152,9 @@ const buildLocalDoctorRecommendations = (specialty?: string): Doctor[] => {
     consultation_fee: doctor.is_authorized ? 120000 : 90000,
   }))
 
-  const matchingDoctors = requestedSpecialty
-    ? mappedDoctors.filter(doctor => normalizeText(doctor.specialty).includes(requestedSpecialty))
-    : mappedDoctors
+  const matchingDoctors = mappedDoctors.filter(doctor => normalizeText(doctor.specialty).includes(requestedSpecialty))
 
-  const fallbackDoctors = mappedDoctors.filter(
-    doctor => !matchingDoctors.some(match => match.id === doctor.id)
-  )
-
-  return matchingDoctors.concat(fallbackDoctors).slice(0, LOCAL_DOCTOR_RECOMMENDATION_LIMIT)
+  return matchingDoctors.slice(0, LOCAL_DOCTOR_RECOMMENDATION_LIMIT)
 }
 
 const mergeDoctorRecommendations = (primaryDoctors: Doctor[] = [], localDoctors: Doctor[] = [], isPremiumUser = false) => {

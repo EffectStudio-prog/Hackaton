@@ -259,6 +259,24 @@ SUPPORTED_SPECIALTIES = {
     "orthopedist",
 }
 
+UNSUPPORTED_SPECIALTY_HINTS = {
+    "dentist": [
+        "toothache", "tooth pain", "tooth", "teeth", "gum pain", "gum swelling",
+        "tish", "tishim", "tish og'rig",
+        "зуб", "зубная боль", "болит зуб", "десна", "болит десна",
+    ],
+    "ophthalmologist": [
+        "eye pain", "eye infection", "blurry vision", "vision problem",
+        "ko'z", "kozim", "ko'rishim", "ko'rmayapman",
+        "глаз", "зрение", "не вижу", "боль в глазу",
+    ],
+    "ent": [
+        "ear pain", "ear infection", "hearing loss", "nose bleed", "sinus",
+        "quloq", "burun", "tomoq",
+        "ухо", "нос", "горло",
+    ],
+}
+
 SPECIALTY_SYNONYMS = {
     "gp": "general practitioner",
     "family doctor": "general practitioner",
@@ -2075,6 +2093,14 @@ def normalize_specialty(raw_specialty: Optional[str]) -> str:
     return "general practitioner"
 
 
+def detect_unsupported_specialty(message: str) -> Optional[str]:
+    lowered = normalize_text(message)
+    for specialty, hints in UNSUPPORTED_SPECIALTY_HINTS.items():
+        if any(hint in lowered for hint in hints):
+            return specialty
+    return None
+
+
 def default_text(language: str, key: str) -> str:
     messages = {
         "en": {
@@ -2121,6 +2147,24 @@ def default_text(language: str, key: str) -> str:
     return messages[lang][key]
 
 
+def demo_unavailable_summary(language: str) -> str:
+    messages = {
+        "en": "This request likely needs a specialty that is not available in the current demo database.",
+        "ru": "Похоже, для этого запроса нужен специалист, которого пока нет в текущей demo-базе.",
+        "uz": "Bu so'rov uchun hozirgi demo bazada mavjud bo'lmagan yo'nalishdagi mutaxassis kerak bo'lishi mumkin.",
+    }
+    return messages.get(language, messages["en"])
+
+
+def demo_unavailable_reply(language: str) -> str:
+    messages = {
+        "en": "This site is currently a demo in development, and there is no matching specialist for this request in the app database yet. For a more complete search, please use an official healthcare system or contact a licensed clinic directly.",
+        "ru": "Сайт сейчас работает как demo в разработке, и в базе приложения пока нет подходящего специалиста по этому запросу. Для более полного поиска используйте официальную систему здравоохранения или обратитесь напрямую в лицензированную клинику.",
+        "uz": "Bu sayt hozir demo rivojlantirish bosqichida va ilova bazasida bu so'rovga mos mutaxassis hali yo'q. To'liqroq qidiruv uchun rasmiy sog'liqni saqlash tizimidan foydalaning yoki litsenziyalangan klinikaga bevosita murojaat qiling.",
+    }
+    return messages.get(language, messages["en"])
+
+
 def heuristic_triage(message: str, language: str) -> dict:
     lowered = normalize_text(message)
     if needs_more_symptom_details(lowered):
@@ -2145,6 +2189,10 @@ def heuristic_triage(message: str, language: str) -> dict:
         if any(hint in lowered for hint in hints):
             specialty = candidate
             break
+
+    unsupported_specialty = detect_unsupported_specialty(lowered)
+    if unsupported_specialty:
+        specialty = unsupported_specialty
 
     bucket = detect_symptom_bucket(lowered, specialty)
     specialty = BUCKET_TO_SPECIALTY.get(bucket, specialty)
@@ -2732,6 +2780,7 @@ def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
     hard_urgent_reason = emergency_reason(req.message)
     triage = heuristic_triage(req.message, req.language)
     needs_more_detail = bool(triage.get("needs_more_detail"))
+    unsupported_specialty = detect_unsupported_specialty(req.message)
 
     raw_specialty = triage.get("specialty")
     specialty_extracted = "" if needs_more_detail or not raw_specialty else normalize_specialty(raw_specialty)
@@ -2767,8 +2816,18 @@ def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
     doctors_list: List[DoctorSchema] = []
     clinics_list: List[FacilitySchema] = []
     hospitals_list: List[FacilitySchema] = []
+    no_matching_recommendation = False
 
-    if specialty_extracted and not is_urgent:
+    if unsupported_specialty and not is_urgent:
+        specialty_extracted = ""
+        summary = demo_unavailable_summary(req.language)
+        advice = demo_unavailable_reply(req.language)
+        likely_condition = ""
+        prevention_tips = []
+        next_steps = []
+        follow_up_questions = []
+        no_matching_recommendation = True
+    elif specialty_extracted and not is_urgent:
         specialty_matches = (
             db.query(models.Doctor)
             .filter(models.Doctor.is_authorized.is_(True))
@@ -2776,49 +2835,52 @@ def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
             .all()
         )
 
-        if not specialty_matches:
-            specialty_matches = (
-                db.query(models.Doctor)
-                .filter(models.Doctor.is_authorized.is_(True))
-                .filter(models.Doctor.specialty.ilike("%general practitioner%"))
-                .all()
+        if specialty_matches:
+            ranked_doctors = rank_doctors(specialty_matches, specialty_extracted, urgency_level)[:limit]
+
+            doctors_list = [
+                DoctorSchema(
+                    id=doctor.id,
+                    name=doctor.name,
+                    specialty=doctor.specialty,
+                    is_authorized=doctor.is_authorized,
+                    rating=doctor.rating,
+                    location=doctor.location,
+                    distance=doctor.distance,
+                    consultation_fee=doctor.consultation_fee,
+                )
+                for doctor in ranked_doctors
+            ]
+            clinics_list, hospitals_list = build_facility_recommendations(
+                req.language,
+                specialty_extracted,
+                urgency_level,
+                req.is_premium,
             )
+        else:
+            summary = demo_unavailable_summary(req.language)
+            advice = demo_unavailable_reply(req.language)
+            likely_condition = ""
+            prevention_tips = []
+            next_steps = []
+            follow_up_questions = []
+            no_matching_recommendation = True
 
-        ranked_doctors = rank_doctors(specialty_matches, specialty_extracted, urgency_level)[:limit]
-
-        doctors_list = [
-            DoctorSchema(
-                id=doctor.id,
-                name=doctor.name,
-                specialty=doctor.specialty,
-                is_authorized=doctor.is_authorized,
-                rating=doctor.rating,
-                location=doctor.location,
-                distance=doctor.distance,
-                consultation_fee=doctor.consultation_fee,
-            )
-            for doctor in ranked_doctors
-        ]
-        clinics_list, hospitals_list = build_facility_recommendations(
-            req.language,
-            specialty_extracted,
-            urgency_level,
-            req.is_premium,
-        )
-
-    reply = request_gemini_doctor(
-        req.message,
-        req.language,
-        urgency_level,
-        specialty_extracted or "general practitioner",
-    )
-    if not reply:
-        reply = request_rapidapi_doctor(
+    reply = ""
+    if not no_matching_recommendation:
+        reply = request_gemini_doctor(
             req.message,
             req.language,
             urgency_level,
             specialty_extracted or "general practitioner",
         )
+        if not reply:
+            reply = request_rapidapi_doctor(
+                req.message,
+                req.language,
+                urgency_level,
+                specialty_extracted or "general practitioner",
+            )
     if not reply:
         reply = compose_reply(
             req.language,

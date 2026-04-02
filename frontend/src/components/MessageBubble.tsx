@@ -113,7 +113,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
           <p className="text-[13px] sm:text-sm leading-relaxed text-gray-800 dark:text-gray-200">
             {hasRecommendations
               ? t('careRecommendations', { defaultValue: 'Recommended care options based on your symptoms.' })
-              : t('noDoctors')}
+              : message.content || t('noDoctors')}
           </p>
         </div>
 
