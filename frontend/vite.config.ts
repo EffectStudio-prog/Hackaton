@@ -14,7 +14,7 @@ const apiRoutes = [
 ]
 
 export default defineConfig(({ command }) => ({
-  base: command === 'build' ? '/Hackaton/' : '/',
+  base: command === 'build' && !process.env.VERCEL ? '/Hackaton/' : '/',
   plugins: [react()],
   server: {
     port: 5173,

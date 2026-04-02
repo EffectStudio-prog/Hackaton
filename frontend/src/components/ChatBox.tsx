@@ -16,6 +16,7 @@ import {
 import ConsultationPanel from './ConsultationPanel'
 import MessageBubble from './MessageBubble'
 import PremiumMapPage from './PremiumMapPage'
+import { apiFetch } from '../utils/api'
 import { ensureLocalConsultation } from '../utils/doctorPortal'
 import { buildNearbyHospitalsMapUrl, requestCurrentPosition } from '../utils/maps'
 
@@ -391,7 +392,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
     setIsLoading(true)
 
     try {
-      const response = await fetch('/chat', {
+      const response = await apiFetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

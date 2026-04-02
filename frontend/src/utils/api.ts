@@ -1,8 +1,21 @@
-const normalizedApiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '')
+const getRuntimeApiBaseUrl = () => {
+  const envValue = (import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '')
+  if (envValue) return envValue
+
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname.toLowerCase()
+    if (host.endsWith('.vercel.app')) {
+      return '/_/backend'
+    }
+  }
+
+  return ''
+}
 
 export const buildApiUrl = (path: string) => {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`
-  return normalizedApiBaseUrl ? `${normalizedApiBaseUrl}${normalizedPath}` : normalizedPath
+  const runtimeApiBaseUrl = getRuntimeApiBaseUrl()
+  return runtimeApiBaseUrl ? `${runtimeApiBaseUrl}${normalizedPath}` : normalizedPath
 }
 
 export const apiFetch: typeof fetch = (input, init) => {
