@@ -26,7 +26,14 @@ app = FastAPI(title="MyDoctor Triage API", version="1.1.0")
 models.Base.metadata.create_all(bind=database.engine)
 
 
+def is_truthy(value: Optional[str]) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def ensure_schema() -> None:
+    if not database.IS_SQLITE:
+        return
+
     with database.engine.begin() as connection:
         user_columns = {
             row[1] for row in connection.exec_driver_sql("PRAGMA table_info(users)").fetchall()
@@ -48,11 +55,30 @@ def ensure_schema() -> None:
 
 
 def clear_legacy_ai_messages() -> None:
+    if not is_truthy(os.getenv("CLEAR_LEGACY_AI_MESSAGES")):
+        return
+
     with database.engine.begin() as connection:
         connection.exec_driver_sql("DELETE FROM messages WHERE role = 'ai'")
 
 
+def maybe_seed_default_doctors() -> None:
+    if os.getenv("AUTO_SEED_DOCTORS", "true").strip().lower() in {"0", "false", "no", "off"}:
+        return
+
+    with database.SessionLocal() as db:
+        has_doctors = db.query(models.Doctor.id).first() is not None
+
+    if has_doctors:
+        return
+
+    from .seed import seed_data
+
+    seed_data()
+
+
 ensure_schema()
+maybe_seed_default_doctors()
 clear_legacy_ai_messages()
 
 app.add_middleware(
