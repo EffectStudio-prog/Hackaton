@@ -1,32 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Activity, BrainCircuit, CheckCircle2, History, Languages, ShieldAlert } from 'lucide-react'
-
-interface SymptomOption {
-  key: string
-  label: string
-}
-
-interface DiseasePrediction {
-  disease_key: string
-  disease: string
-  probability: number
-  confidence: 'low' | 'medium' | 'high'
-  reasons: string[]
-}
-
-interface PredictionResponse {
-  input_symptoms: string[]
-  input_symptom_keys: string[]
-  extracted_symptoms: string[]
-  predictions: DiseasePrediction[]
-  model: {
-    name?: string
-    metrics?: Record<string, number>
-    uses_fallback?: boolean
-  }
-  disclaimer: string
-}
+import { apiFetch } from '../utils/api'
+import {
+  getFallbackMetadata,
+  predictWithFallback,
+  type PredictionResponse,
+  type SymptomOption,
+} from '../utils/diseasePredictionFallback'
 
 interface HistoryEntry {
   id: string
@@ -71,6 +52,7 @@ const DiseasePredictorPage: React.FC = () => {
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory())
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
+  const [modeNotice, setModeNotice] = useState('')
 
   useEffect(() => {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history))
@@ -80,14 +62,23 @@ const DiseasePredictorPage: React.FC = () => {
     const loadMetadata = async () => {
       try {
         const language = i18n.language?.split('-')[0] || 'en'
-        const response = await fetch(`/predict/metadata?language=${language}`)
+        const response = await apiFetch(`/predict/metadata?language=${language}`)
         const data = await response.json().catch(() => ({}))
         if (!response.ok) {
           throw new Error(data?.detail ?? 'Metadata request failed.')
         }
         setSymptoms(Array.isArray(data?.symptoms) ? data.symptoms : [])
+        setModeNotice('')
       } catch (metadataError) {
-        setError(formatRequestError(metadataError, t('predictionLoadError', { defaultValue: 'Could not load prediction metadata.' })))
+        const language = i18n.language?.split('-')[0] || 'en'
+        const fallbackMetadata = getFallbackMetadata(language)
+        setSymptoms(fallbackMetadata.symptoms)
+        setModeNotice(
+          t('predictionFallbackNotice', {
+            defaultValue: 'Backend unavailable. The embedded demo predictor is active and still shows estimated probabilities.',
+          })
+        )
+        setError('')
       }
     }
 
@@ -112,7 +103,7 @@ const DiseasePredictorPage: React.FC = () => {
     setError('')
 
     try {
-      const response = await fetch('/predict', {
+      const response = await apiFetch('/predict', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -126,6 +117,7 @@ const DiseasePredictorPage: React.FC = () => {
         throw new Error(data?.detail ?? t('predictionRunError', { defaultValue: 'Prediction request failed.' }))
       }
       const nextResult = data as PredictionResponse
+      setModeNotice('')
       setResult(nextResult)
       setHistory(previous => [
         {
@@ -138,7 +130,29 @@ const DiseasePredictorPage: React.FC = () => {
         ...previous,
       ].slice(0, 10))
     } catch (predictionError) {
-      setError(formatRequestError(predictionError, t('predictionRunError', { defaultValue: 'Prediction request failed.' })))
+      const language = i18n.language?.split('-')[0] || 'en'
+      const nextResult = predictWithFallback({
+        symptoms: selectedSymptoms,
+        text: freeText,
+        language,
+      })
+      setResult(nextResult)
+      setModeNotice(
+        t('predictionFallbackNotice', {
+          defaultValue: 'Backend unavailable. The embedded demo predictor is active and still shows estimated probabilities.',
+        })
+      )
+      setError('')
+      setHistory(previous => [
+        {
+          id: `${Date.now()}`,
+          createdAt: Date.now(),
+          text: freeText,
+          symptomKeys: selectedSymptoms,
+          result: nextResult,
+        },
+        ...previous,
+      ].slice(0, 10))
     } finally {
       setIsLoading(false)
     }
@@ -231,6 +245,12 @@ const DiseasePredictorPage: React.FC = () => {
           {error && (
             <div className="mt-4 rounded-2xl border border-red-200 bg-red-50/80 px-4 py-3 text-sm text-red-700 dark:border-red-900/30 dark:bg-red-500/10 dark:text-red-200">
               {error}
+            </div>
+          )}
+
+          {modeNotice && (
+            <div className="mt-4 rounded-2xl border border-brand-200 bg-brand-50/80 px-4 py-3 text-sm text-brand-700 dark:border-brand-900/30 dark:bg-brand-500/10 dark:text-brand-200">
+              {modeNotice}
             </div>
           )}
 
