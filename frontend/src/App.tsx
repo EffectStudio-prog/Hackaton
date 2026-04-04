@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Activity, BrainCircuit, BriefcaseMedical, Crown, Globe, LogIn, Moon, Sun, User, UserPlus } from 'lucide-react'
+import { Activity, BrainCircuit, BriefcaseMedical, Crown, Globe, HeartHandshake, LogIn, Moon, Sun, User, UserPlus } from 'lucide-react'
 
 import AdminAccessModal from './components/admin/AdminAccessModal'
 import Dashboard from './components/admin/Dashboard'
@@ -9,8 +9,11 @@ import ChatBox from './components/ChatBox'
 import ConsultationPanel from './components/ConsultationPanel'
 import DiseasePredictorPage from './components/DiseasePredictorPage'
 import DoctorAuthModal from './components/DoctorAuthModal'
+import LandingPage from './components/LandingPage'
+import MentalWellnessPage from './components/MentalWellnessPage'
 import PremiumPage from './components/PremiumPage'
-import { countDoctorPendingRequests } from './utils/doctorPortal'
+import ProfilePage from './components/ProfilePage'
+import { countDoctorPendingRequests, listDoctorLocalConsultations, loadLocalConsultations } from './utils/doctorPortal'
 import { loadPremiumConfig } from './utils/premiumConfig'
 import {
   applyReferralReward,
@@ -26,6 +29,8 @@ interface AuthUser {
   username: string
   email: string
   is_premium: boolean
+  photo_url?: string
+  phone_number?: string
 }
 
 interface DoctorUser {
@@ -33,7 +38,22 @@ interface DoctorUser {
   name: string
   email: string
   specialty: string
+  location?: string
   is_authorized: boolean
+  diploma_status?: 'verified' | 'needs_review'
+  diploma_name?: string
+  is_premium?: boolean
+  photo_url?: string
+}
+
+interface ViewedDoctorProfile {
+  id: number
+  name: string
+  email: string
+  specialty: string
+  location?: string
+  is_authorized: boolean
+  photo_url?: string
 }
 
 const AUTH_STORAGE_KEY = 'mydoctor-auth-user'
@@ -101,7 +121,8 @@ function App() {
     }
   })
   const [doctorPendingRequests, setDoctorPendingRequests] = useState(0)
-  const [activePage, setActivePage] = useState<'chat' | 'predictor'>('chat')
+  const [activePage, setActivePage] = useState<'chat' | 'predictor' | 'profile' | 'wellness'>('chat')
+  const [viewedDoctorProfile, setViewedDoctorProfile] = useState<ViewedDoctorProfile | null>(null)
   const [showLangMenu, setShowLangMenu] = useState(false)
   const [adminTapCount, setAdminTapCount] = useState(0)
   const [lastAdminTap, setLastAdminTap] = useState(0)
@@ -143,6 +164,37 @@ function App() {
     setCurrentLang(activeLanguage)
     document.documentElement.lang = activeLanguage
   }, [i18n, i18n.language, i18n.resolvedLanguage])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const currentUrl = new URL(window.location.href)
+    const telegramAuth = currentUrl.searchParams.get('telegram_auth')
+    const telegramError = currentUrl.searchParams.get('telegram_error')
+    if (!telegramAuth && !telegramError) {
+      return
+    }
+
+    if (telegramAuth) {
+      try {
+        const normalized = telegramAuth.replace(/-/g, '+').replace(/_/g, '/')
+        const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4)
+        const decoded = JSON.parse(window.atob(padded)) as AuthUser
+        const nextUser: AuthUser = {
+          ...decoded,
+          username: decoded.username ?? decoded.email ?? '',
+        }
+        setAuthUser(nextUser)
+        setIsPremium(Boolean(nextUser.is_premium))
+        setActivePage('chat')
+        setShowAuthModal(false)
+      } catch {}
+    }
+
+    currentUrl.searchParams.delete('telegram_auth')
+    currentUrl.searchParams.delete('telegram_error')
+    window.history.replaceState({}, document.title, `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`)
+  }, [])
 
   useEffect(() => {
     localStorage.setItem('medmap-premium', String(isPremium))
@@ -237,11 +289,40 @@ function App() {
   }
 
   const handleActivatePremium = async () => {
+    if (doctorUser && !authUser) {
+      setDoctorUser({ ...doctorUser, is_premium: true })
+      try {
+        const raw = localStorage.getItem('mydoctor-local-doctors')
+        const parsed = raw ? JSON.parse(raw) : []
+        if (Array.isArray(parsed)) {
+          localStorage.setItem(
+            'mydoctor-local-doctors',
+            JSON.stringify(parsed.map(doctor => (doctor.id === doctorUser.id ? { ...doctor, is_premium: true } : doctor)))
+          )
+        }
+      } catch {}
+      setShowPremiumPage(false)
+      return
+    }
     await syncPremium(true)
     setShowPremiumPage(false)
   }
 
   const handleDeactivatePremium = async () => {
+    if (doctorUser && !authUser) {
+      setDoctorUser({ ...doctorUser, is_premium: false })
+      try {
+        const raw = localStorage.getItem('mydoctor-local-doctors')
+        const parsed = raw ? JSON.parse(raw) : []
+        if (Array.isArray(parsed)) {
+          localStorage.setItem(
+            'mydoctor-local-doctors',
+            JSON.stringify(parsed.map(doctor => (doctor.id === doctorUser.id ? { ...doctor, is_premium: false } : doctor)))
+          )
+        }
+      } catch {}
+      return
+    }
     await syncPremium(false)
   }
 
@@ -251,21 +332,97 @@ function App() {
     }
     setAuthUser(user)
     setIsPremium(Boolean(user.is_premium))
+    setActivePage('chat')
   }
 
   const handleDoctorAuthenticated = (doctor: DoctorUser) => {
     setDoctorUser(doctor)
     setShowDoctorPortal(true)
+    setActivePage('chat')
+  }
+
+  const handleUserPhotoChange = (photoUrl: string) => {
+    if (!authUser) return
+
+    const nextUser = { ...authUser, photo_url: photoUrl }
+    setAuthUser(nextUser)
+
+    try {
+      const raw = localStorage.getItem(LOCAL_USER_KEY)
+      const parsed = raw ? JSON.parse(raw) : []
+      if (Array.isArray(parsed)) {
+        localStorage.setItem(
+          LOCAL_USER_KEY,
+          JSON.stringify(parsed.map(user => (user.id === authUser.id ? { ...user, photo_url: photoUrl } : user)))
+        )
+      }
+    } catch {}
+  }
+
+  const handleDoctorPhotoChange = (photoUrl: string) => {
+    if (!doctorUser) return
+
+    const nextDoctor = { ...doctorUser, photo_url: photoUrl }
+    setDoctorUser(nextDoctor)
+
+    try {
+      const raw = localStorage.getItem('mydoctor-local-doctors')
+      const parsed = raw ? JSON.parse(raw) : []
+      if (Array.isArray(parsed)) {
+        localStorage.setItem(
+          'mydoctor-local-doctors',
+          JSON.stringify(parsed.map(doctor => (doctor.id === doctorUser.id ? { ...doctor, photo_url: photoUrl } : doctor)))
+        )
+      }
+    } catch {}
   }
 
   const handleLogout = () => {
     setAuthUser(null)
     setIsPremium(false)
+    setActivePage('chat')
   }
 
   const handleDoctorLogout = () => {
     setDoctorUser(null)
     setShowDoctorPortal(false)
+    setActivePage('chat')
+    setViewedDoctorProfile(null)
+  }
+
+  const handleOpenDoctorProfile = (doctor: { id: number; name: string; specialty: string; location: string }) => {
+    try {
+      const raw = localStorage.getItem('mydoctor-local-doctors')
+      const parsed = raw ? JSON.parse(raw) : []
+      const matched = Array.isArray(parsed) ? parsed.find(item => item.id === doctor.id) : null
+
+      setViewedDoctorProfile({
+        id: doctor.id,
+        name: matched?.name ?? doctor.name,
+        email: matched?.email ?? `${doctor.name.toLowerCase().replace(/\s+/g, '.')}@mydoctor.local`,
+        specialty: matched?.specialty ?? doctor.specialty,
+        location: matched?.location ?? doctor.location,
+        is_authorized: Boolean(matched?.is_authorized),
+        photo_url: matched?.photo_url,
+      })
+      setShowDoctorPortal(false)
+      setShowPremiumPage(false)
+      setShowAdminDashboard(false)
+      setActivePage('profile')
+    } catch {
+      setViewedDoctorProfile({
+        id: doctor.id,
+        name: doctor.name,
+        email: `${doctor.name.toLowerCase().replace(/\s+/g, '.')}@mydoctor.local`,
+        specialty: doctor.specialty,
+        location: doctor.location,
+        is_authorized: false,
+      })
+      setShowDoctorPortal(false)
+      setShowPremiumPage(false)
+      setShowAdminDashboard(false)
+      setActivePage('profile')
+    }
   }
 
   const handleRedeemReferralMonth = async () => {
@@ -311,12 +468,18 @@ function App() {
 
   const referralCode = authUser ? buildReferralCode(authUser.id) : 'MYDOC-GUEST'
   const referralLink = authUser ? buildReferralLink(authUser.id) : window.location.href
+  const userConsultationCount = authUser
+    ? loadLocalConsultations().filter(consultation => consultation.user_id === authUser.id).length
+    : 0
+  const doctorConsultationCount = doctorUser
+    ? listDoctorLocalConsultations(doctorUser.id).length
+    : 0
 
   const currentLangLabel = languages.find(language => language.code === currentLang)?.label || 'EN'
 
   return (
-    <div className="h-full flex flex-col bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 dark:from-gray-950 dark:via-gray-900 dark:to-slate-900 transition-colors duration-300">
-      <header className="relative z-50 flex-shrink-0 border-b border-white/50 dark:border-gray-700/50 bg-white/60 dark:bg-gray-900/60 backdrop-blur-md px-3 sm:px-4 py-2.5 sm:py-3">
+    <div className="h-full flex flex-col bg-[linear-gradient(180deg,#fffdfb_0%,#fff7f5_45%,#fff3f1_100%)] text-slate-900 transition-colors duration-300 dark:bg-[linear-gradient(180deg,#0d1324_0%,#10182b_50%,#151c31_100%)] dark:text-white">
+      <header className="relative z-50 mx-3 mt-3 flex-shrink-0 rounded-[1.7rem] border border-white/70 bg-white/70 px-3 py-2.5 shadow-[0_22px_60px_-35px_rgba(240,128,128,0.45)] backdrop-blur-xl dark:border-white/10 dark:bg-white/10 dark:shadow-[0_24px_70px_-40px_rgba(0,0,0,0.9)] sm:mx-4 sm:mt-4 sm:px-4 sm:py-3">
         <div className="w-full max-w-7xl mx-auto flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
             <button
@@ -337,18 +500,7 @@ function App() {
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2 xl:max-w-[72%]">
-            {!doctorUser && authUser ? (
-              <button
-                onClick={handleLogout}
-                className="btn-ghost flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold"
-                title={t('logout', { defaultValue: 'Log out' })}
-              >
-                <User className="w-4 h-4" />
-                <span className="hidden md:inline max-w-[9rem] truncate">
-                  {authUser.username || authUser.email}
-                </span>
-              </button>
-            ) : !doctorUser ? (
+            {!authUser && !doctorUser ? (
               <button
                 onClick={() => setShowAuthModal(true)}
                 className="btn-ghost flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold"
@@ -363,7 +515,10 @@ function App() {
             {doctorUser ? (
               <>
                 <button
-                  onClick={() => setShowDoctorPortal(true)}
+                  onClick={() => {
+                    setShowDoctorPortal(true)
+                    setActivePage('chat')
+                  }}
                   className={`btn-ghost flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold ${
                     showDoctorPortal ? 'text-brand-700 dark:text-brand-300' : ''
                   }`}
@@ -377,17 +532,8 @@ function App() {
                     </span>
                   )}
                 </button>
-                <button
-                  onClick={handleDoctorLogout}
-                  className="btn-ghost flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold"
-                  title={t('logout')}
-                >
-                  <span className="hidden xl:inline max-w-[12rem] truncate">
-                    {doctorUser.name} {doctorUser.is_authorized ? `- ${t('doctorApprovedShort')}` : `- ${t('doctorPendingShort')}`}
-                  </span>
-                </button>
               </>
-            ) : (
+            ) : !authUser ? (
               <button
                 onClick={() => setShowDoctorAuthModal(true)}
                 className="btn-ghost flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold"
@@ -396,7 +542,7 @@ function App() {
                 <BriefcaseMedical className="w-4 h-4" />
                 <span className="hidden md:inline">{t('doctorLoginTitle')}</span>
               </button>
-            )}
+            ) : null}
 
             <div className="relative">
               <button
@@ -451,6 +597,23 @@ function App() {
             </button>
 
             <button
+              onClick={() => {
+                setShowDoctorPortal(false)
+                setViewedDoctorProfile(null)
+                setActivePage(value => (value === 'wellness' ? 'chat' : 'wellness'))
+              }}
+              className={`btn-ghost flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold ${
+                activePage === 'wellness' ? 'text-brand-700 dark:text-brand-300' : ''
+              }`}
+              title={t('mentalWellnessNav', { defaultValue: 'Mental wellness support' })}
+            >
+              <HeartHandshake className="w-4 h-4" />
+              <span className="hidden md:inline">
+                {t('mentalWellnessNav', { defaultValue: 'Mental wellness support' })}
+              </span>
+            </button>
+
+            <button
               id="premium-toggle"
               onClick={() => {
                 setShowPremiumPage(true)
@@ -488,13 +651,7 @@ function App() {
         </div>
       </header>
 
-      <main
-        className={`flex-1 overflow-hidden w-full flex flex-col ${
-          showAdminDashboard || showPremiumPage
-            ? 'max-w-7xl mx-auto px-2 sm:px-4 lg:px-6'
-            : 'max-w-none px-0'
-        }`}
-      >
+      <main className={`relative flex-1 overflow-hidden w-full flex flex-col ${showAdminDashboard ? 'max-w-7xl mx-auto px-2 sm:px-4 lg:px-6' : 'max-w-none px-0'}`}>
         {showAdminDashboard ? (
           <Dashboard
             onBack={() => {
@@ -502,19 +659,19 @@ function App() {
               setPremiumConfig(loadPremiumConfig())
             }}
           />
-        ) : showPremiumPage ? (
-          <PremiumPage
-            isPremium={isPremium}
-            onActivate={handleActivatePremium}
-            onDeactivate={handleDeactivatePremium}
-            onBack={() => setShowPremiumPage(false)}
-            monthlyPrice={premiumConfig.monthlyPrice}
-            yearlyPrice={premiumConfig.yearlyPrice}
-            referralPoints={referralState.points}
-            referralCount={referralState.referrals}
-            referralCode={referralCode}
-            referralLink={referralLink}
-            onRedeemReferralMonth={handleRedeemReferralMonth}
+        ) : activePage === 'profile' && (authUser || doctorUser || viewedDoctorProfile) ? (
+          <ProfilePage
+            authUser={authUser}
+            doctorUser={viewedDoctorProfile ?? doctorUser}
+            consultationCount={viewedDoctorProfile ? 0 : doctorUser ? doctorConsultationCount : userConsultationCount}
+            onBack={() => {
+              setActivePage('chat')
+              setViewedDoctorProfile(null)
+            }}
+            onLogout={viewedDoctorProfile ? () => setActivePage('chat') : doctorUser ? handleDoctorLogout : handleLogout}
+            onPhotoChange={viewedDoctorProfile ? undefined : doctorUser ? handleDoctorPhotoChange : handleUserPhotoChange}
+            canEdit={!viewedDoctorProfile}
+            canLogout={!viewedDoctorProfile}
           />
         ) : doctorUser && showDoctorPortal ? (
           <ConsultationPanel
@@ -528,9 +685,27 @@ function App() {
             storageMode="local"
             variant="page"
             onClose={() => setShowDoctorPortal(false)}
+            onOpenProfile={() => {
+              setViewedDoctorProfile(null)
+              setShowDoctorPortal(false)
+              setActivePage('profile')
+            }}
+            isPremiumDoctor={Boolean(doctorUser.is_premium)}
           />
         ) : activePage === 'predictor' ? (
           <DiseasePredictorPage />
+        ) : activePage === 'wellness' ? (
+          <MentalWellnessPage
+            onBack={() => setActivePage('chat')}
+          />
+        ) : !authUser && !doctorUser && activePage === 'chat' ? (
+          <LandingPage
+            onOpenAuth={() => setShowAuthModal(true)}
+            onOpenDoctorAuth={() => setShowDoctorAuthModal(true)}
+            onOpenPremium={() => setShowPremiumPage(true)}
+            onOpenPredictor={() => setActivePage('predictor')}
+            onOpenWellness={() => setActivePage('wellness')}
+          />
         ) : (
           <ChatBox
             isPremium={isPremium}
@@ -539,6 +714,21 @@ function App() {
             language={currentLang}
             onOpenPremium={() => setShowPremiumPage(true)}
             onRequireAuth={() => setShowAuthModal(true)}
+            onViewDoctorProfile={handleOpenDoctorProfile}
+            onOpenWellness={() => {
+              setShowDoctorPortal(false)
+              setViewedDoctorProfile(null)
+              setActivePage('wellness')
+            }}
+            onOpenProfile={
+              authUser
+                ? () => {
+                    setViewedDoctorProfile(null)
+                    setShowDoctorPortal(false)
+                    setActivePage('profile')
+                  }
+                : undefined
+            }
           />
         )}
       </main>
@@ -548,6 +738,27 @@ function App() {
           className="fixed inset-0 z-30"
           onClick={() => setShowLangMenu(false)}
         />
+      )}
+
+      {showPremiumPage && (
+        <div className="fixed inset-0 z-[70] bg-[#fff7f1]/65 px-3 py-4 backdrop-blur-xl dark:bg-[#060814]/70 sm:px-4 sm:py-6">
+          <div className="h-full overflow-y-auto">
+            <PremiumPage
+              isPremium={doctorUser && !authUser ? Boolean(doctorUser.is_premium) : isPremium}
+              onActivate={handleActivatePremium}
+              onDeactivate={handleDeactivatePremium}
+              onBack={() => setShowPremiumPage(false)}
+              monthlyPrice={premiumConfig.monthlyPrice}
+              yearlyPrice={premiumConfig.yearlyPrice}
+              referralPoints={referralState.points}
+              referralCount={referralState.referrals}
+              referralCode={referralCode}
+              referralLink={referralLink}
+              onRedeemReferralMonth={handleRedeemReferralMonth}
+              accountType={doctorUser && !authUser ? 'doctor' : 'user'}
+            />
+          </div>
+        </div>
       )}
 
       {showAuthModal && (

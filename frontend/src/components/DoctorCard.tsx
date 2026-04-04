@@ -17,6 +17,7 @@ interface DoctorCardProps {
   doctor: Doctor
   index: number
   onStartChat?: (doctor: Doctor) => void
+  onViewProfile?: (doctor: Doctor) => void
   reservationUserKey?: string
   reservationUserLabel?: string
 }
@@ -47,10 +48,12 @@ const DoctorCard: React.FC<DoctorCardProps> = ({
   doctor,
   index,
   onStartChat,
+  onViewProfile,
   reservationUserKey = 'guest',
-  reservationUserLabel = 'Guest patient',
+  reservationUserLabel,
 }) => {
   const { t } = useTranslation()
+  const resolvedReservationUserLabel = reservationUserLabel || t('guestPatientLabel', { defaultValue: 'Guest patient' })
   const key = getSpecialtyKey(doctor.specialty)
   const icon = specialtyIcons[key] || 'DR'
   const gradient = specialtyColors[key] || 'from-brand-500 to-brand-600'
@@ -80,7 +83,7 @@ const DoctorCard: React.FC<DoctorCardProps> = ({
     const result = ensureDoctorReservation({
       doctorId: doctor.id,
       reserverKey: reservationUserKey,
-      patientLabel: reservationUserLabel,
+      patientLabel: resolvedReservationUserLabel,
     })
     setQueueNumber(result.queueNumber)
   }
@@ -145,8 +148,8 @@ const DoctorCard: React.FC<DoctorCardProps> = ({
                 </span>
               </div>
               <p className="mt-1 break-words text-[10px] font-medium text-emerald-800/90 dark:text-emerald-200">
-                {t('reservedByLabel', {
-                  name: reservationUserLabel,
+                  {t('reservedByLabel', {
+                  name: resolvedReservationUserLabel,
                   defaultValue: 'Reserved by: {{name}}',
                 })}
               </p>
@@ -179,7 +182,7 @@ const DoctorCard: React.FC<DoctorCardProps> = ({
 
           <button
             className="flex w-full items-center justify-center gap-1 sm:gap-1.5 bg-brand-50 dark:bg-brand-900/40 hover:bg-brand-100 dark:hover:bg-brand-900/70 text-brand-700 dark:text-brand-300 text-[10px] sm:text-xs font-semibold px-2 sm:px-3 py-2 rounded-lg transition-colors sm:w-auto"
-            onClick={() => alert(`Viewing profile for ${doctor.name}`)}
+            onClick={() => onViewProfile?.(doctor)}
           >
             <ExternalLink className="w-3 h-3 hidden sm:block" />
             {t('viewDoctor')}

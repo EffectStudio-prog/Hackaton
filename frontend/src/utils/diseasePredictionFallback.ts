@@ -16,6 +16,10 @@ export interface PredictionResponse {
   input_symptom_keys: string[]
   extracted_symptoms: string[]
   predictions: DiseasePrediction[]
+  risk_level?: 'low' | 'medium' | 'high'
+  recommended_specialty?: string
+  clinical_summary?: string
+  recommended_actions?: string[]
   model: {
     name?: string
     metrics?: Record<string, number>
@@ -113,6 +117,7 @@ const MODEL_METRICS = {
   precision_macro: 0.83,
   recall_macro: 0.82,
   f1_macro: 0.82,
+  symptom_coverage: 0.88,
 }
 
 const normalizeLanguage = (language: string) => (language === 'uz' || language === 'ru' ? language : 'en')
@@ -133,6 +138,66 @@ const confidenceBucket = (score: number): 'low' | 'medium' | 'high' => {
   if (score >= 0.6) return 'high'
   if (score >= 0.3) return 'medium'
   return 'low'
+}
+
+const computeRiskLevel = (symptoms: string[]): 'low' | 'medium' | 'high' => {
+  if (symptoms.includes('chest_pain') || symptoms.includes('shortness_of_breath')) {
+    return 'high'
+  }
+  if (symptoms.includes('fever') || symptoms.includes('vomiting') || symptoms.includes('dizziness')) {
+    return 'medium'
+  }
+  return 'low'
+}
+
+const getRecommendedSpecialty = (topDisease: string) => {
+  switch (topDisease) {
+    case 'asthma':
+      return 'Pulmonology'
+    case 'dermatitis':
+      return 'Dermatology'
+    case 'type_2_diabetes':
+      return 'Endocrinology'
+    case 'urinary_tract_infection':
+      return 'Urology'
+    case 'migraine':
+      return 'Neurology'
+    default:
+      return 'General practitioner'
+  }
+}
+
+const buildClinicalSummary = (language: string, topDisease: string, symptoms: string[]) => {
+  const symptomLabels = symptoms.slice(0, 4).map(symptom => localizeLabel(SYMPTOM_LABELS, symptom, language))
+  const diseaseLabel = localizeLabel(DISEASE_LABELS, topDisease, language)
+
+  if (language === 'uz') {
+    return `Tizim ${diseaseLabel} ehtimolini yuqori baholadi, chunki asosiy belgilar: ${symptomLabels.join(', ')}.`
+  }
+
+  if (language === 'ru') {
+    return `Система выделила ${diseaseLabel} как наиболее вероятный вариант из-за симптомов: ${symptomLabels.join(', ')}.`
+  }
+
+  return `The system ranked ${diseaseLabel} highest based on the current symptom pattern: ${symptomLabels.join(', ')}.`
+}
+
+const buildRecommendedActions = (language: string, riskLevel: 'low' | 'medium' | 'high') => {
+  if (language === 'uz') {
+    if (riskLevel === 'high') return ['Tez yordam bilan bog‘laning.', 'Eng yaqin shifoxonaga boring.', 'Yolg‘iz qolmang.']
+    if (riskLevel === 'medium') return ['24 soat ichida shifokor ko‘rigiga boring.', 'Suyuqlik iching va simptomlarni yozib boring.', 'Agar kuchaysa, shoshilinch yordamga murojaat qiling.']
+    return ['Dam oling va simptomlarni kuzating.', 'Suv iching.', 'Belgilar davom etsa, terapevtga yoziling.']
+  }
+
+  if (language === 'ru') {
+    if (riskLevel === 'high') return ['Свяжитесь с экстренной помощью.', 'Поезжайте в ближайшую больницу.', 'Не оставайтесь одни.']
+    if (riskLevel === 'medium') return ['Запишитесь к врачу в течение 24 часов.', 'Пейте больше жидкости и отслеживайте симптомы.', 'Если станет хуже, срочно обратитесь за помощью.']
+    return ['Отдыхайте и наблюдайте за симптомами.', 'Пейте воду.', 'Если симптомы сохраняются, обратитесь к терапевту.']
+  }
+
+  if (riskLevel === 'high') return ['Contact emergency support.', 'Go to the nearest hospital.', 'Do not stay alone while symptoms are active.']
+  if (riskLevel === 'medium') return ['Arrange a doctor visit within 24 hours.', 'Stay hydrated and monitor symptoms.', 'Escalate urgently if symptoms worsen.']
+  return ['Rest and monitor symptoms.', 'Stay hydrated.', 'Book a general checkup if symptoms persist.']
 }
 
 const buildReason = (language: string, diseaseKey: string, selectedSymptoms: string[]) => {
@@ -229,11 +294,18 @@ export const predictWithFallback = (payload: {
     .sort((a, b) => b.probability - a.probability)
     .slice(0, 3)
 
+  const riskLevel = computeRiskLevel(mergedSymptoms)
+  const topDiseaseKey = predictions[0]?.disease_key || 'common_cold'
+
   return {
     input_symptoms: mergedSymptoms.map(symptomKey => localizeLabel(SYMPTOM_LABELS, symptomKey, normalizedLanguage)),
     input_symptom_keys: mergedSymptoms,
     extracted_symptoms: extractedSymptoms.map(symptomKey => localizeLabel(SYMPTOM_LABELS, symptomKey, normalizedLanguage)),
     predictions,
+    risk_level: riskLevel,
+    recommended_specialty: getRecommendedSpecialty(topDiseaseKey),
+    clinical_summary: buildClinicalSummary(normalizedLanguage, topDiseaseKey, mergedSymptoms),
+    recommended_actions: buildRecommendedActions(normalizedLanguage, riskLevel),
     model: {
       name: 'Embedded fallback model',
       metrics: MODEL_METRICS,

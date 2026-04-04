@@ -8,16 +8,21 @@ import {
   MessageSquarePlus,
   PanelLeftClose,
   PanelLeftOpen,
+  Paperclip,
   Send,
+  Sparkles,
   Stethoscope,
   Trash2,
+  UserCircle2,
 } from 'lucide-react'
 
+import AttachmentList from './AttachmentList'
 import ConsultationPanel from './ConsultationPanel'
 import MessageBubble from './MessageBubble'
 import PremiumMapPage from './PremiumMapPage'
 import { apiFetch } from '../utils/api'
 import { ensureLocalConsultation } from '../utils/doctorPortal'
+import { createSharedAttachment, type SharedAttachment } from '../utils/fileUploads'
 import { buildNearbyHospitalsMapUrl, requestCurrentPosition } from '../utils/maps'
 
 interface Doctor {
@@ -46,6 +51,14 @@ interface Message {
   id: string
   role: 'user' | 'ai' | 'typing'
   content: string
+  attachments?: SharedAttachment[]
+  predictions?: Array<{
+    disease_key: string
+    disease: string
+    probability: number
+    confidence: 'low' | 'medium' | 'high'
+    reasons?: string[]
+  }>
   createdAt?: number
   isPremium?: boolean
   summary?: string
@@ -80,6 +93,9 @@ interface ChatBoxProps {
   language: string
   onOpenPremium: () => void
   onRequireAuth: () => void
+  onViewDoctorProfile?: (doctor: Doctor) => void
+  onOpenWellness?: () => void
+  onOpenProfile?: () => void
 }
 
 const CHAT_HISTORY_KEY = 'mydoctor-chat-history'
@@ -87,6 +103,7 @@ const CHAT_HISTORY_MINIMIZED_KEY = 'mydoctor-chat-history-minimized'
 const LOCAL_DOCTOR_KEY = 'mydoctor-local-doctors'
 const LOCAL_DOCTOR_RECOMMENDATION_LIMIT = 6
 const PATIENT_SESSION_KEY = 'mydoctor-patient-session'
+const SIDEBAR_VISIBLE_ITEMS = 5
 
 interface StoredDoctorRecord {
   id: number
@@ -124,6 +141,11 @@ const sortConversations = (conversations: Conversation[]) =>
   [...conversations].sort((left, right) => right.updatedAt - left.updatedAt)
 
 const normalizeText = (value?: string | null) => (value ?? '').trim().toLowerCase()
+
+const buildAttachmentContext = (attachments: SharedAttachment[]) => {
+  if (attachments.length === 0) return ''
+  return `\n\nAttached files:\n${attachments.map(file => `- ${file.name} (${file.type || 'file'})`).join('\n')}`
+}
 
 const loadLocalDoctors = (): StoredDoctorRecord[] => {
   try {
@@ -195,17 +217,19 @@ const loadPatientSessionKey = () => {
   }
 }
 
-const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, language, onOpenPremium, onRequireAuth }) => {
+const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, language, onOpenPremium, onRequireAuth, onViewDoctorProfile, onOpenWellness, onOpenProfile }) => {
   const { t, i18n } = useTranslation()
   const [conversations, setConversations] = useState<Conversation[]>(() => loadStoredConversations())
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(() => loadStoredConversations()[0]?.id ?? null)
   const [messages, setMessages] = useState<Message[]>(() => loadStoredConversations()[0]?.messages ?? [])
   const [input, setInput] = useState('')
+  const [selectedAttachments, setSelectedAttachments] = useState<SharedAttachment[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [mapState, setMapState] = useState<'idle' | 'loading' | 'error'>('idle')
   const [mapError, setMapError] = useState('')
   const [mapIframeUrl, setMapIframeUrl] = useState('')
   const [isHistoryMinimized, setIsHistoryMinimized] = useState(() => localStorage.getItem(CHAT_HISTORY_MINIMIZED_KEY) === 'true')
+  const [showAllHistory, setShowAllHistory] = useState(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const [patientSessionKey] = useState(() => loadPatientSessionKey())
   const [consultationState, setConsultationState] = useState<{
@@ -217,6 +241,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(conversations))
@@ -290,6 +315,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
     setCurrentConversationId(null)
     setMessages([])
     setInput('')
+    setSelectedAttachments([])
     setMapIframeUrl('')
     setMapError('')
   }
@@ -299,6 +325,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
     setCurrentConversationId(conversationId)
     setMapIframeUrl('')
     setMapError('')
+    setSelectedAttachments([])
   }
 
   const handleDeleteConversation = useCallback((conversationId: string) => {
@@ -374,10 +401,17 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
 
   const sendMessage = useCallback(async (text: string) => {
     const trimmed = text.trim()
-    if (!trimmed || isLoading) return
+    if ((!trimmed && selectedAttachments.length === 0) || isLoading) return
 
     const conversationId = currentConversationId ?? genId()
-    const userMsg: Message = { id: genId(), role: 'user', content: trimmed, createdAt: Date.now(), isPremium }
+    const userMsg: Message = {
+      id: genId(),
+      role: 'user',
+      content: trimmed,
+      attachments: selectedAttachments,
+      createdAt: Date.now(),
+      isPremium,
+    }
     const typingMsg: Message = { id: 'typing', role: 'typing', content: '' }
     const pendingMessages = [...messages, userMsg, typingMsg]
 
@@ -385,6 +419,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
     setMessages(pendingMessages)
     upsertConversation(conversationId, pendingMessages)
     setInput('')
+    setSelectedAttachments([])
     setIsLoading(true)
 
     try {
@@ -392,7 +427,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: trimmed,
+          message: `${trimmed}${buildAttachmentContext(selectedAttachments)}`.trim(),
           user_id: userId ?? null,
           language: i18n.language?.split('-')[0] || language,
           is_premium: isPremium,
@@ -417,6 +452,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
         createdAt: Date.now(),
         summary: data.summary,
         likelyCondition: data.likely_condition,
+        predictions: data.predictions,
         preventionTips: data.prevention_tips,
         emergencyWarning: data.emergency_warning,
         specialty: data.specialty,
@@ -437,7 +473,11 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
       const errorMsg: Message = {
         id: genId(),
         role: 'ai',
-        content: `Could not reach the backend.\n\nMake sure:\n- The FastAPI server is running on port 8000\n- The triage API is available\n\nError: ${errText}`,
+        content: t('chatBackendUnavailable', {
+          error: errText,
+          defaultValue:
+            'Could not reach the backend.\n\nMake sure:\n- The FastAPI server is running on port 8000\n- The triage API is available\n\nError: {{error}}',
+        }),
       }
 
       const failedMessages = pendingMessages.filter(message => message.id !== 'typing').concat(errorMsg)
@@ -446,7 +486,26 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
     } finally {
       setIsLoading(false)
     }
-  }, [currentConversationId, i18n.language, isLoading, isPremium, language, messages, upsertConversation, userId])
+  }, [currentConversationId, i18n.language, isLoading, isPremium, language, messages, selectedAttachments, t, upsertConversation, userId])
+
+  const handleAttachmentUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = event.target.files
+    if (!fileList || fileList.length === 0) {
+      return
+    }
+
+    try {
+      const nextFiles = await Promise.all(Array.from(fileList).map(createSharedAttachment))
+      setSelectedAttachments(previous => [...previous, ...nextFiles].slice(0, 4))
+    } catch (error) {
+      const message = error instanceof Error && error.message === 'file_too_large'
+        ? t('fileTooLarge', { defaultValue: 'Each file must be smaller than 8 MB.' })
+        : t('fileUploadFailed', { defaultValue: 'Could not read the selected file.' })
+      setMapError(message)
+    } finally {
+      event.target.value = ''
+    }
+  }, [t])
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -459,8 +518,12 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [])
 
-  const lang = i18n.language?.split('-')[0] || 'en'
-  const suggestions = SUGGESTIONS[lang] ?? SUGGESTIONS.en
+  const suggestions = [
+    t('chatSuggestionOne', { defaultValue: 'I have a severe headache and nausea' }),
+    t('chatSuggestionTwo', { defaultValue: 'My chest hurts and I feel short of breath' }),
+    t('chatSuggestionThree', { defaultValue: 'I have a rash on my arm' }),
+    t('chatSuggestionFour', { defaultValue: 'My child has a high fever' }),
+  ]
   const showWelcome = messages.length === 0 && !currentConversationId
   const reservationUserKey = userId ? `user-${userId}` : patientSessionKey
   const reservationUserLabel = userLabel || t('callCenterPatientLabel', { defaultValue: 'Call center visitor' })
@@ -476,6 +539,9 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
       })),
     [conversations]
   )
+  const visibleConversations = showAllHistory
+    ? formattedConversations
+    : formattedConversations.slice(0, SIDEBAR_VISIBLE_ITEMS)
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden lg:flex-row">
@@ -516,13 +582,14 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
           )}
 
           {!isHistoryMinimized && (
-            <div className="flex gap-2 overflow-x-auto lg:flex-col lg:overflow-y-auto lg:overflow-x-hidden pb-1">
+            <div className="min-h-0 flex-1 flex flex-col">
+              <div className="flex-1 gap-2 overflow-x-auto lg:flex lg:flex-col lg:overflow-y-auto lg:overflow-x-hidden pb-1">
               {formattedConversations.length === 0 ? (
                 <div className="glass-card p-3 text-xs leading-6 text-gray-500 dark:text-gray-400">
                   {t('historyEmpty')}
                 </div>
               ) : (
-                formattedConversations.map(conversation => (
+                visibleConversations.map(conversation => (
                   <div
                     key={conversation.id}
                     className={`min-w-[220px] sm:min-w-[260px] lg:min-w-0 rounded-2xl transition-all border ${
@@ -558,8 +625,68 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
                   </div>
                 ))
               )}
+              </div>
+
+              {formattedConversations.length > SIDEBAR_VISIBLE_ITEMS && (
+                <div className="pt-2">
+                  <button
+                    onClick={() => setShowAllHistory(value => !value)}
+                    className="btn-ghost w-full px-3 py-2 text-xs font-semibold"
+                  >
+                    {showAllHistory
+                      ? t('showLess', { defaultValue: 'Show less' })
+                      : t('showMore', { defaultValue: 'Show more' })}
+                  </button>
+                </div>
+              )}
             </div>
           )}
+
+          <div className={`mt-auto space-y-2 pt-2 ${isHistoryMinimized ? 'flex flex-col items-center' : ''}`}>
+            {onOpenWellness && (
+              <button
+                onClick={onOpenWellness}
+                className={`w-full rounded-2xl border border-cyan-200/80 bg-cyan-50/80 px-3 py-3 text-left transition-colors hover:border-cyan-300 hover:bg-cyan-100/70 dark:border-cyan-900/60 dark:bg-cyan-500/10 dark:hover:border-cyan-700 dark:hover:bg-cyan-500/15 ${
+                  isHistoryMinimized ? 'lg:w-auto lg:px-3' : ''
+                }`}
+                title={t('mentalWellnessNav', { defaultValue: 'Mental wellness support' })}
+              >
+                <span className="flex w-full items-start gap-2">
+                  <Sparkles className="mt-0.5 h-4 w-4 flex-shrink-0 text-cyan-600 dark:text-cyan-300" />
+                  <span className={`min-w-0 flex-1 ${isHistoryMinimized ? 'lg:hidden' : ''}`}>
+                    <span className="block break-words text-sm font-semibold leading-5 text-cyan-900 dark:text-cyan-100">
+                      {t('mentalWellnessNav', { defaultValue: 'Mental wellness support' })}
+                    </span>
+                    <span className="mt-0.5 block break-words text-xs leading-5 text-cyan-700/80 dark:text-cyan-200/80">
+                      {t('mentalWellnessHint', { defaultValue: 'Calming help and grounding steps' })}
+                    </span>
+                  </span>
+                </span>
+              </button>
+            )}
+
+            {onOpenProfile && (
+              <button
+                onClick={onOpenProfile}
+                className={`w-full rounded-2xl border border-slate-200/80 bg-white/80 px-3 py-3 text-left transition-colors hover:border-brand-300 hover:bg-brand-50/60 dark:border-slate-700 dark:bg-slate-900/70 dark:hover:border-brand-700 dark:hover:bg-brand-900/20 ${
+                  isHistoryMinimized ? 'lg:w-auto lg:px-3' : ''
+                }`}
+                title={userLabel || t('userProfile', { defaultValue: 'User profile' })}
+              >
+                <span className="flex w-full items-start gap-2">
+                  <UserCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0 text-brand-500" />
+                  <span className={`min-w-0 flex-1 ${isHistoryMinimized ? 'lg:hidden' : ''}`}>
+                    <span className="block break-words text-sm font-semibold leading-5 text-slate-900 dark:text-white">
+                      {t('userProfile', { defaultValue: 'User profile' })}
+                    </span>
+                    <span className="mt-0.5 block break-words text-xs leading-5 text-slate-500 dark:text-slate-400">
+                      {userLabel || t('loginTitle', { defaultValue: 'Log in' })}
+                    </span>
+                  </span>
+                </span>
+              </button>
+            )}
+          </div>
         </div>
       </aside>
 
@@ -597,11 +724,11 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
             }}
             initialConsultationId={consultationState.consultationId}
             variant="page"
-            demoSession={{
-              doctorName: consultationState.target.name,
-              doctorSpecialty: consultationState.target.specialty,
-              patientLabel: consultationState.patientLabel ?? 'Demo patient',
-            }}
+              demoSession={{
+                doctorName: consultationState.target.name,
+                doctorSpecialty: consultationState.target.specialty,
+                patientLabel: consultationState.patientLabel ?? t('demoPatientLabel', { defaultValue: 'Demo patient' }),
+              }}
             onClose={() => setConsultationState(null)}
           />
         ) : (
@@ -641,6 +768,28 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
                     </div>
                   )}
 
+                  {onOpenWellness && (
+                    <div className="glass-card max-w-xl w-full p-4 sm:p-5 mb-6 text-left border-cyan-200/80 dark:border-cyan-900/50">
+                      <div className="flex flex-col items-start gap-4 sm:flex-row sm:justify-between">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                            {t('mentalWellnessCardTitle', { defaultValue: 'Need emotional support too?' })}
+                          </p>
+                          <p className="mt-1 text-xs sm:text-sm text-gray-600 dark:text-gray-300 leading-6">
+                            {t('mentalWellnessCardText', { defaultValue: 'Open the mental wellness page for calming exercises, low-pressure support, and a simple recovery plan.' })}
+                          </p>
+                        </div>
+                        <button
+                          onClick={onOpenWellness}
+                          className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-cyan-500 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-cyan-600 sm:w-auto sm:text-sm"
+                        >
+                          <Sparkles className="w-4 h-4" />
+                          {t('mentalWellnessOpen', { defaultValue: 'Open support' })}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {mapError && isPremium && (
                     <div className="max-w-xl w-full mb-4 rounded-xl border border-red-200 bg-red-50/80 px-4 py-3 text-left dark:border-red-900/40 dark:bg-red-500/10">
                       <p className="text-[11px] sm:text-xs text-red-600 dark:text-red-300 leading-relaxed">
@@ -667,9 +816,11 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
                 <MessageBubble
                   key={message.id}
                   message={message}
+                  language={language}
                   isPremium={isPremium}
                   onOpenPremium={onOpenPremium}
                   onStartDoctorChat={openDoctorConsultation}
+                  onViewDoctorProfile={onViewDoctorProfile}
                   onStartFacilityChat={openFacilityCallCenter}
                   reservationUserKey={reservationUserKey}
                   reservationUserLabel={reservationUserLabel}
@@ -697,40 +848,85 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
             </div>
 
             <div className="px-2 sm:px-4 pb-3 sm:pb-4 pt-2">
-              <div className="glass-card p-1.5 sm:p-2 flex items-end gap-1.5 sm:gap-2">
-                <textarea
-                  ref={textareaRef}
-                  id="chat-input"
-                  className="input-field flex-1 min-h-[44px] sm:min-h-[48px] max-h-[120px] sm:max-h-[160px] text-[13px] sm:text-sm border-0 bg-transparent focus:ring-0 py-2.5 sm:py-3 px-3"
-                  placeholder={t('placeholder')}
-                  value={input}
-                  onChange={event => setInput(event.target.value)}
-                  onKeyDown={handleKeyDown}
-                  rows={1}
-                  disabled={isLoading || mapState === 'loading'}
-                />
-                {isPremium && (
-                  <button
-                    id="map-button"
-                    onClick={openPremiumHospitalsMap}
-                    disabled={mapState === 'loading'}
-                    className="flex-shrink-0 w-10 h-10 sm:w-11 sm:h-11 flex items-center justify-center rounded-lg sm:rounded-xl border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors disabled:opacity-60"
-                    aria-label={t('premiumMapOpen')}
-                    title={mapState === 'loading' ? t('findingNearestHospital') : t('premiumMapOpen')}
-                  >
-                    <MapPin className="w-4 h-4" />
-                  </button>
+              <div className="chat-composer">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-brand-600 dark:text-brand-300">
+                      {t('smartComposer', { defaultValue: 'Smart symptom input' })}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      {t('smartComposerHint', { defaultValue: 'Describe symptoms, attach reports, and send everything in one message.' })}
+                    </p>
+                  </div>
+                  <div className="hidden sm:flex items-center gap-2 rounded-full bg-brand-50 px-3 py-1 text-[11px] font-semibold text-brand-700 dark:bg-brand-900/30 dark:text-brand-200">
+                    <Sparkles className="h-3.5 w-3.5" />
+                    {t('aiAssistLabel', { defaultValue: 'AI-assisted' })}
+                  </div>
+                </div>
+
+                {selectedAttachments.length > 0 && (
+                  <div className="mt-3">
+                    <AttachmentList attachments={selectedAttachments} />
+                    <button
+                      onClick={() => setSelectedAttachments([])}
+                      className="btn-ghost mt-2 px-3 py-1.5 text-xs"
+                    >
+                      {t('clearAttachments', { defaultValue: 'Clear attachments' })}
+                    </button>
+                  </div>
                 )}
-                <button
-                  id="send-button"
-                  onClick={() => sendMessage(input)}
-                  disabled={!input.trim() || isLoading}
-                  className="btn-primary flex-shrink-0 w-10 h-10 sm:w-11 sm:h-11 flex items-center justify-center p-0 rounded-lg sm:rounded-xl"
-                  aria-label={t('send')}
-                  title={t('send')}
-                >
-                  <Send className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                </button>
+
+                <div className="mt-3 flex items-end gap-2">
+                  <textarea
+                    ref={textareaRef}
+                    id="chat-input"
+                    className="input-field flex-1 min-h-[52px] sm:min-h-[58px] max-h-[120px] sm:max-h-[160px] text-[13px] sm:text-sm border-0 bg-transparent focus:ring-0 py-3 sm:py-3.5 px-0 shadow-none"
+                    placeholder={t('placeholder')}
+                    value={input}
+                    onChange={event => setInput(event.target.value)}
+                    onKeyDown={handleKeyDown}
+                    rows={1}
+                    disabled={isLoading || mapState === 'loading'}
+                  />
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    onChange={handleAttachmentUpload}
+                    multiple
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isLoading}
+                    className="composer-icon-button"
+                    aria-label={t('uploadFile', { defaultValue: 'Upload a file' })}
+                    title={t('uploadFile', { defaultValue: 'Upload a file' })}
+                  >
+                    <Paperclip className="w-4 h-4" />
+                  </button>
+                  {isPremium && (
+                    <button
+                      id="map-button"
+                      onClick={openPremiumHospitalsMap}
+                      disabled={mapState === 'loading'}
+                      className="composer-icon-button"
+                      aria-label={t('premiumMapOpen')}
+                      title={mapState === 'loading' ? t('findingNearestHospital') : t('premiumMapOpen')}
+                    >
+                      <MapPin className="w-4 h-4" />
+                    </button>
+                  )}
+                  <button
+                    id="send-button"
+                    onClick={() => sendMessage(input)}
+                    disabled={(!input.trim() && selectedAttachments.length === 0) || isLoading}
+                    className="btn-primary flex-shrink-0 w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center p-0 rounded-2xl"
+                    aria-label={t('send')}
+                    title={t('send')}
+                  >
+                    <Send className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                  </button>
+                </div>
               </div>
             </div>
           </>

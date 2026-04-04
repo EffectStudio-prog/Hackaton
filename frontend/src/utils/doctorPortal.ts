@@ -10,6 +10,7 @@ export interface LocalConsultationMessage {
   sender_id: number
   content: string
   created_at: string
+  attachments?: SharedAttachment[]
 }
 
 export interface LocalConsultationRecord {
@@ -28,10 +29,20 @@ export interface LocalConsultationRecord {
   source: 'local'
 }
 
+export interface SharedAttachment {
+  id: string
+  name: string
+  size: number
+  type: string
+  url: string
+  uploadedAt: string
+}
+
 export interface DoctorReservationEntry {
   reserverKey: string
   patientLabel: string
   reservedAt: number
+  status?: 'scheduled' | 'done'
 }
 
 export interface DoctorQueueSlot extends DoctorReservationEntry {
@@ -139,14 +150,16 @@ export const appendLocalConsultationMessage = ({
   actorType,
   actorId,
   content,
+  attachments = [],
 }: {
   consultationId: number
   actorType: 'user' | 'doctor'
   actorId: number
   content: string
+  attachments?: SharedAttachment[]
 }) => {
   const trimmed = content.trim()
-  if (!trimmed) {
+  if (!trimmed && attachments.length === 0) {
     return getLocalConsultation(consultationId)
   }
 
@@ -167,6 +180,7 @@ export const appendLocalConsultationMessage = ({
         sender_id: actorId,
         content: trimmed,
         created_at: now,
+        attachments,
       }),
     }
 
@@ -180,6 +194,44 @@ export const appendLocalConsultationMessage = ({
   }
 
   return updatedConsultation
+}
+
+export const updateLocalConsultationStatus = ({
+  consultationId,
+  status,
+}: {
+  consultationId: number
+  status: string
+}) => {
+  let updatedConsultation: LocalConsultationRecord | null = null
+
+  const consultations = loadLocalConsultations().map(consultation => {
+    if (consultation.id !== consultationId) {
+      return consultation
+    }
+
+    updatedConsultation = {
+      ...consultation,
+      status,
+      updated_at: new Date().toISOString(),
+    }
+
+    return updatedConsultation
+  })
+
+  if (updatedConsultation) {
+    saveLocalConsultations(
+      consultations.sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
+    )
+  }
+
+  return updatedConsultation
+}
+
+export const deleteLocalConsultation = (consultationId: number) => {
+  const remaining = loadLocalConsultations().filter(consultation => consultation.id !== consultationId)
+  saveLocalConsultations(remaining)
+  return remaining
 }
 
 export const countDoctorPendingRequests = (doctorId: number) =>
@@ -240,7 +292,7 @@ export const ensureDoctorReservation = ({
 }
 
 export const getDoctorQueueSlots = (doctorId: number): DoctorQueueSlot[] => {
-  const queue = loadDoctorReservations()[String(doctorId)] || []
+  const queue = (loadDoctorReservations()[String(doctorId)] || []).filter(entry => entry.status !== 'done')
   if (queue.length === 0) {
     return []
   }
@@ -259,3 +311,34 @@ export const getDoctorQueueSlots = (doctorId: number): DoctorQueueSlot[] => {
     }
   })
 }
+
+const updateDoctorReservationQueue = (
+  doctorId: number,
+  updater: (queue: DoctorReservationEntry[]) => DoctorReservationEntry[]
+) => {
+  const reservations = loadDoctorReservations()
+  const doctorKey = String(doctorId)
+  reservations[doctorKey] = updater(reservations[doctorKey] || [])
+  saveDoctorReservations(reservations)
+  return reservations[doctorKey]
+}
+
+export const completeDoctorReservation = ({
+  doctorId,
+  reserverKey,
+}: {
+  doctorId: number
+  reserverKey: string
+}) =>
+  updateDoctorReservationQueue(doctorId, queue =>
+    queue.map(entry => (entry.reserverKey === reserverKey ? { ...entry, status: 'done' } : entry))
+  )
+
+export const deleteDoctorReservation = ({
+  doctorId,
+  reserverKey,
+}: {
+  doctorId: number
+  reserverKey: string
+}) =>
+  updateDoctorReservationQueue(doctorId, queue => queue.filter(entry => entry.reserverKey !== reserverKey))

@@ -9,7 +9,10 @@ class User(Base):
     id         = Column(Integer, primary_key=True, index=True)
     username   = Column(String, unique=True, index=True, nullable=True)
     email      = Column(String, unique=True, index=True, nullable=True)
+    telegram_id = Column(String, unique=True, index=True, nullable=True)
     password_hash = Column(String, nullable=True)
+    phone_number = Column(String, nullable=True)
+    photo_url = Column(String, nullable=True)
     is_premium = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

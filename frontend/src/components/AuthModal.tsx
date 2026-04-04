@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Eye, EyeOff, LogIn, UserPlus, X } from 'lucide-react'
+import { Eye, EyeOff, LogIn, MessageCircleMore, UserPlus, X } from 'lucide-react'
+import { apiFetch } from '../utils/api'
 
 const AUTH_DRAFT_KEY = 'mydoctor-auth-draft'
 const LOCAL_USER_KEY = 'mydoctor-local-users'
@@ -87,6 +88,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, onAuthenticated }) => {
   const [error, setError] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [isTelegramSubmitting, setIsTelegramSubmitting] = useState(false)
 
   const persistDraft = (next: {
     mode?: 'login' | 'signup'
@@ -200,6 +202,35 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, onAuthenticated }) => {
     }
   }
 
+  const handleTelegramLogin = async () => {
+    setError('')
+    setIsTelegramSubmitting(true)
+
+    try {
+      const returnTo = (() => {
+        const nextUrl = new URL(window.location.href)
+        nextUrl.searchParams.delete('telegram_auth')
+        nextUrl.searchParams.delete('telegram_error')
+        return nextUrl.toString()
+      })()
+
+      const response = await apiFetch(`/auth/telegram/url?return_to=${encodeURIComponent(returnTo)}`)
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok || !data?.auth_url) {
+        throw new Error(data?.detail || t('telegramLoginUnavailable', { defaultValue: 'Telegram login is not configured yet.' }))
+      }
+
+      window.location.href = String(data.auth_url)
+    } catch (submissionError) {
+      setError(
+        submissionError instanceof Error
+          ? submissionError.message
+          : t('telegramLoginFailed', { defaultValue: 'Could not start Telegram login.' })
+      )
+      setIsTelegramSubmitting(false)
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-[80] bg-gray-950/45 backdrop-blur-sm overflow-y-auto px-4 py-4 sm:py-6">
       <div className="min-h-full flex items-center justify-center">
@@ -245,6 +276,28 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, onAuthenticated }) => {
               {t('signupTitle', { defaultValue: 'Sign up' })}
             </span>
           </button>
+        </div>
+
+        <div className="mt-5 rounded-2xl border border-sky-100 bg-sky-50/70 p-3 dark:border-sky-300/10 dark:bg-sky-400/10">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-600 dark:text-sky-200">
+            {t('telegramLoginLabel', { defaultValue: 'Telegram account' })}
+          </p>
+          <p className="mt-2 text-xs leading-6 text-sky-700 dark:text-sky-100/90">
+            {t('telegramRealLoginHint', { defaultValue: 'Real Telegram login can return your profile photo and, with consent, your verified phone number.' })}
+          </p>
+          <div className="mt-3 flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => void handleTelegramLogin()}
+              disabled={isTelegramSubmitting}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#229ED9] px-4 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <MessageCircleMore className="h-4 w-4" />
+              {isTelegramSubmitting
+                ? t('telegramRedirecting', { defaultValue: 'Redirecting to Telegram...' })
+                : t('telegramContinue', { defaultValue: 'Continue with Telegram' })}
+            </button>
+          </div>
         </div>
 
         <div className="mt-5 space-y-3">
