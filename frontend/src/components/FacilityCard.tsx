@@ -11,6 +11,7 @@ interface Facility {
   location: string
   distance: number
   reservation_fee: number
+  description?: string
 }
 
 interface FacilityCardProps {
@@ -57,6 +58,7 @@ const FacilityCard: React.FC<FacilityCardProps> = ({
 
   const description = useMemo(
     () =>
+      facility.description ||
       t('facilityCardDescription', {
         type: facility.facility_type === 'hospital' ? t('hospitalLabel') : t('clinicLabel'),
         specialty: facility.specialty_focus,
@@ -64,7 +66,7 @@ const FacilityCard: React.FC<FacilityCardProps> = ({
         rating: facility.rating.toFixed(1),
         defaultValue: '{{type}} for {{specialty}} support near {{location}} with a {{rating}} rating.',
       }),
-    [facility.facility_type, facility.location, facility.rating, facility.specialty_focus, t]
+    [facility.description, facility.facility_type, facility.location, facility.rating, facility.specialty_focus, t]
   )
 
   const handleReserve = () => {

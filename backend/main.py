@@ -18,8 +18,18 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     genai = None
 
-from . import database, models
-from .disease_prediction import SYMPTOM_LABELS, localize_label, service as disease_prediction_service
+try:
+    from anthropic import Anthropic
+except ImportError:  # pragma: no cover - optional dependency
+    Anthropic = None
+
+try:
+    from . import database, models
+    from .disease_prediction import SYMPTOM_LABELS, localize_label, service as disease_prediction_service
+except ImportError:  # pragma: no cover - allows running as `uvicorn main:app`
+    import database  # type: ignore
+    import models  # type: ignore
+    from disease_prediction import SYMPTOM_LABELS, localize_label, service as disease_prediction_service  # type: ignore
 
 
 app = FastAPI(title="MyDoctor Triage API", version="1.1.0")
@@ -72,7 +82,10 @@ def maybe_seed_default_doctors() -> None:
     if has_doctors:
         return
 
-    from .seed import seed_data
+    try:
+        from .seed import seed_data
+    except ImportError:  # pragma: no cover - allows running as `uvicorn main:app`
+        from seed import seed_data  # type: ignore
 
     seed_data()
 
@@ -95,6 +108,15 @@ class ChatRequest(BaseModel):
     user_id: Optional[int] = None
     language: str = "en"
     is_premium: bool = False
+
+
+class TranslateRequest(BaseModel):
+    texts: List[str] = Field(default_factory=list)
+    target_language: str = "en"
+
+
+class TranslateResponse(BaseModel):
+    translations: List[str] = Field(default_factory=list)
 
 
 class AuthRequest(BaseModel):
@@ -168,10 +190,19 @@ class FacilitySchema(BaseModel):
     description: str
 
 
+class DiseasePredictionSchema(BaseModel):
+    disease_key: str
+    disease: str
+    probability: float
+    confidence: str
+    reasons: List[str] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     reply: str
     summary: str = ""
     likely_condition: str = ""
+    predictions: List[DiseasePredictionSchema] = Field(default_factory=list)
     prevention_tips: List[str] = Field(default_factory=list)
     emergency_warning: str = ""
     specialty: Optional[str] = None
@@ -220,14 +251,6 @@ class PredictRequest(BaseModel):
     symptoms: List[str] = Field(default_factory=list)
     text: str = ""
     language: str = "en"
-
-
-class DiseasePredictionSchema(BaseModel):
-    disease_key: str
-    disease: str
-    probability: float
-    confidence: str
-    reasons: List[str] = Field(default_factory=list)
 
 
 class PredictResponse(BaseModel):
@@ -584,6 +607,8 @@ RAPIDAPI_HOST = os.getenv(
     "ai-doctor-api-ai-medical-chatbot-healthcare-ai-assistant.p.rapidapi.com",
 )
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 
@@ -2269,6 +2294,62 @@ def request_gemini_doctor(message: str, language: str, urgency_level: str, speci
     return ""
 
 
+def extract_anthropic_reply(payload: object) -> str:
+    if isinstance(payload, str):
+        return payload.strip()
+
+    if isinstance(payload, list):
+        parts: List[str] = []
+        for item in payload:
+            text = extract_anthropic_reply(item)
+            if text:
+                parts.append(text)
+        return "\n".join(parts).strip()
+
+    if isinstance(payload, dict):
+        for key in ("text", "content", "value"):
+            value = payload.get(key)
+            text = extract_anthropic_reply(value)
+            if text:
+                return text
+        return ""
+
+    text = getattr(payload, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    content = getattr(payload, "content", None)
+    if content is not None:
+        return extract_anthropic_reply(content)
+
+    return ""
+
+
+def request_anthropic_doctor(message: str, language: str, urgency_level: str, specialty: str) -> str:
+    if Anthropic is None or not ANTHROPIC_API_KEY:
+        return ""
+
+    prompt = build_first_aid_message(message, language, urgency_level, specialty)
+
+    try:
+        client = Anthropic(api_key=ANTHROPIC_API_KEY)
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=180,
+            temperature=0.4,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+        )
+    except Exception:
+        return ""
+
+    return extract_anthropic_reply(response)
+
+
 def extract_rapidapi_reply(payload: object) -> str:
     if isinstance(payload, str):
         return payload.strip()
@@ -2338,6 +2419,95 @@ def request_rapidapi_doctor(message: str, language: str, urgency_level: str, spe
         return body.strip()
 
     return extract_rapidapi_reply(parsed)
+
+
+def parse_translation_payload(raw_text: str, expected_count: int) -> List[str]:
+    raw_text = raw_text.strip()
+    if not raw_text:
+        return []
+
+    try:
+        parsed = json.loads(raw_text)
+        if isinstance(parsed, dict):
+            translations = parsed.get("translations", [])
+        else:
+            translations = parsed
+        if isinstance(translations, list):
+            normalized = [str(item).strip() for item in translations]
+            if len(normalized) == expected_count:
+                return normalized
+    except json.JSONDecodeError:
+        pass
+
+    start = raw_text.find("{")
+    end = raw_text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            parsed = json.loads(raw_text[start : end + 1])
+            translations = parsed.get("translations", [])
+            if isinstance(translations, list):
+                normalized = [str(item).strip() for item in translations]
+                if len(normalized) == expected_count:
+                    return normalized
+        except json.JSONDecodeError:
+            return []
+
+    return []
+
+
+def request_anthropic_translation(texts: List[str], target_language: str) -> List[str]:
+    if Anthropic is None or not ANTHROPIC_API_KEY or not texts:
+        return []
+
+    language_name = LANG_MAP.get(target_language, "English")
+    payload = json.dumps({"texts": texts}, ensure_ascii=False)
+    prompt = (
+        f"Translate each string in the JSON payload into {language_name}.\n"
+        "Return ONLY valid JSON with this exact shape: {\"translations\": [\"...\"]}\n"
+        "Keep the same order, preserve meaning, and do not add explanations.\n"
+        f"Payload: {payload}"
+    )
+
+    try:
+        client = Anthropic(api_key=ANTHROPIC_API_KEY)
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=1200,
+            temperature=0,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception:
+        return []
+
+    return parse_translation_payload(extract_anthropic_reply(response), len(texts))
+
+
+def request_gemini_translation(texts: List[str], target_language: str) -> List[str]:
+    if genai is None or not GEMINI_API_KEY or not texts:
+        return []
+
+    language_name = LANG_MAP.get(target_language, "English")
+    payload = json.dumps({"texts": texts}, ensure_ascii=False)
+    prompt = (
+        f"Translate each string in the JSON payload into {language_name}.\n"
+        "Return ONLY valid JSON with this exact shape: {\"translations\": [\"...\"]}\n"
+        "Keep the same order, preserve meaning, and do not add explanations.\n"
+        f"Payload: {payload}"
+    )
+
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+        )
+    except Exception:
+        return []
+
+    text = getattr(response, "text", None)
+    if not isinstance(text, str):
+        return []
+    return parse_translation_payload(text, len(texts))
 
 
 def rank_doctors(doctors: List[models.Doctor], specialty: str, urgency_level: str) -> List[models.Doctor]:
@@ -2768,6 +2938,23 @@ def predict_disease(req: PredictRequest):
     return PredictResponse(**result)
 
 
+@app.post("/translate", response_model=TranslateResponse)
+def translate_texts(req: TranslateRequest):
+    normalized_language = req.target_language if req.target_language in LANG_MAP else "en"
+    cleaned_texts = [text.strip() for text in req.texts if text and text.strip()]
+
+    if not cleaned_texts:
+        return TranslateResponse(translations=[])
+
+    translations = request_anthropic_translation(cleaned_texts, normalized_language)
+    if not translations:
+        translations = request_gemini_translation(cleaned_texts, normalized_language)
+    if not translations:
+        translations = cleaned_texts
+
+    return TranslateResponse(translations=translations)
+
+
 @app.post("/chat", response_model=ChatResponse)
 def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
     print(f"[Chat] mode={TRIAGE_MODE} lang={req.language} premium={req.is_premium} msg={req.message[:80]}")
@@ -2797,8 +2984,12 @@ def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
     summary = str(triage.get("summary", "")).strip() or default_text(req.language, "fallback_summary")
     advice = str(triage.get("advice", "")).strip() or default_text(req.language, "fallback_reply")
     likely_condition = str(triage.get("likely_condition", "")).strip()
+    prediction_result = disease_prediction_service.predict([], req.message, req.language)
+    predictions = prediction_result.get("predictions", [])
     if not likely_condition and specialty_extracted:
         likely_condition = likely_condition_text(req.language, specialty_extracted, hard_urgent_reason, is_urgent)
+    if not likely_condition and predictions:
+        likely_condition = str(predictions[0].get("disease", "")).strip()
 
     prevention_tips = triage.get("prevention_tips") or []
     if not prevention_tips and specialty_extracted:
@@ -2868,12 +3059,19 @@ def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
 
     reply = ""
     if not no_matching_recommendation:
-        reply = request_gemini_doctor(
+        reply = request_anthropic_doctor(
             req.message,
             req.language,
             urgency_level,
             specialty_extracted or "general practitioner",
         )
+        if not reply:
+            reply = request_gemini_doctor(
+                req.message,
+                req.language,
+                urgency_level,
+                specialty_extracted or "general practitioner",
+            )
         if not reply:
             reply = request_rapidapi_doctor(
                 req.message,
@@ -2900,6 +3098,7 @@ def handle_chat(req: ChatRequest, db: Session = Depends(database.get_db)):
         reply=reply,
         summary=summary,
         likely_condition=likely_condition,
+        predictions=[DiseasePredictionSchema(**prediction) for prediction in predictions],
         prevention_tips=prevention_tips,
         emergency_warning=emergency_warning,
         specialty=specialty_extracted or None,

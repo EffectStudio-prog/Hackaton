@@ -1,6 +1,10 @@
 from sqlalchemy import Column, Integer, String, Boolean, Float, Text, ForeignKey, DateTime
 from sqlalchemy.sql import func
-from .database import Base
+
+try:
+    from .database import Base
+except ImportError:  # pragma: no cover - allows running as `uvicorn main:app`
+    from database import Base  # type: ignore
 
 
 class User(Base):

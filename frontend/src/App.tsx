@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Activity, BrainCircuit, BriefcaseMedical, Crown, Globe, LogIn, Moon, Sun, User, UserPlus } from 'lucide-react'
+import { Activity, BrainCircuit, BriefcaseMedical, Crown, Globe, HeartHandshake, LogIn, Moon, Sun, User, UserPlus } from 'lucide-react'
 
 import AdminAccessModal from './components/admin/AdminAccessModal'
 import Dashboard from './components/admin/Dashboard'
@@ -9,8 +9,10 @@ import ChatBox from './components/ChatBox'
 import ConsultationPanel from './components/ConsultationPanel'
 import DiseasePredictorPage from './components/DiseasePredictorPage'
 import DoctorAuthModal from './components/DoctorAuthModal'
+import MentalWellnessPage from './components/MentalWellnessPage'
 import PremiumPage from './components/PremiumPage'
-import { countDoctorPendingRequests } from './utils/doctorPortal'
+import ProfilePage from './components/ProfilePage'
+import { countDoctorPendingRequests, listDoctorLocalConsultations, loadLocalConsultations } from './utils/doctorPortal'
 import { loadPremiumConfig } from './utils/premiumConfig'
 import {
   applyReferralReward,
@@ -26,6 +28,7 @@ interface AuthUser {
   username: string
   email: string
   is_premium: boolean
+  photo_url?: string
 }
 
 interface DoctorUser {
@@ -33,7 +36,22 @@ interface DoctorUser {
   name: string
   email: string
   specialty: string
+  location?: string
   is_authorized: boolean
+  diploma_status?: 'verified' | 'needs_review'
+  diploma_name?: string
+  is_premium?: boolean
+  photo_url?: string
+}
+
+interface ViewedDoctorProfile {
+  id: number
+  name: string
+  email: string
+  specialty: string
+  location?: string
+  is_authorized: boolean
+  photo_url?: string
 }
 
 const AUTH_STORAGE_KEY = 'mydoctor-auth-user'
@@ -101,7 +119,8 @@ function App() {
     }
   })
   const [doctorPendingRequests, setDoctorPendingRequests] = useState(0)
-  const [activePage, setActivePage] = useState<'chat' | 'predictor'>('chat')
+  const [activePage, setActivePage] = useState<'chat' | 'predictor' | 'profile' | 'wellness'>('chat')
+  const [viewedDoctorProfile, setViewedDoctorProfile] = useState<ViewedDoctorProfile | null>(null)
   const [showLangMenu, setShowLangMenu] = useState(false)
   const [adminTapCount, setAdminTapCount] = useState(0)
   const [lastAdminTap, setLastAdminTap] = useState(0)
@@ -237,11 +256,40 @@ function App() {
   }
 
   const handleActivatePremium = async () => {
+    if (doctorUser && !authUser) {
+      setDoctorUser({ ...doctorUser, is_premium: true })
+      try {
+        const raw = localStorage.getItem('mydoctor-local-doctors')
+        const parsed = raw ? JSON.parse(raw) : []
+        if (Array.isArray(parsed)) {
+          localStorage.setItem(
+            'mydoctor-local-doctors',
+            JSON.stringify(parsed.map(doctor => (doctor.id === doctorUser.id ? { ...doctor, is_premium: true } : doctor)))
+          )
+        }
+      } catch {}
+      setShowPremiumPage(false)
+      return
+    }
     await syncPremium(true)
     setShowPremiumPage(false)
   }
 
   const handleDeactivatePremium = async () => {
+    if (doctorUser && !authUser) {
+      setDoctorUser({ ...doctorUser, is_premium: false })
+      try {
+        const raw = localStorage.getItem('mydoctor-local-doctors')
+        const parsed = raw ? JSON.parse(raw) : []
+        if (Array.isArray(parsed)) {
+          localStorage.setItem(
+            'mydoctor-local-doctors',
+            JSON.stringify(parsed.map(doctor => (doctor.id === doctorUser.id ? { ...doctor, is_premium: false } : doctor)))
+          )
+        }
+      } catch {}
+      return
+    }
     await syncPremium(false)
   }
 
@@ -251,21 +299,97 @@ function App() {
     }
     setAuthUser(user)
     setIsPremium(Boolean(user.is_premium))
+    setActivePage('chat')
   }
 
   const handleDoctorAuthenticated = (doctor: DoctorUser) => {
     setDoctorUser(doctor)
     setShowDoctorPortal(true)
+    setActivePage('chat')
+  }
+
+  const handleUserPhotoChange = (photoUrl: string) => {
+    if (!authUser) return
+
+    const nextUser = { ...authUser, photo_url: photoUrl }
+    setAuthUser(nextUser)
+
+    try {
+      const raw = localStorage.getItem(LOCAL_USER_KEY)
+      const parsed = raw ? JSON.parse(raw) : []
+      if (Array.isArray(parsed)) {
+        localStorage.setItem(
+          LOCAL_USER_KEY,
+          JSON.stringify(parsed.map(user => (user.id === authUser.id ? { ...user, photo_url: photoUrl } : user)))
+        )
+      }
+    } catch {}
+  }
+
+  const handleDoctorPhotoChange = (photoUrl: string) => {
+    if (!doctorUser) return
+
+    const nextDoctor = { ...doctorUser, photo_url: photoUrl }
+    setDoctorUser(nextDoctor)
+
+    try {
+      const raw = localStorage.getItem('mydoctor-local-doctors')
+      const parsed = raw ? JSON.parse(raw) : []
+      if (Array.isArray(parsed)) {
+        localStorage.setItem(
+          'mydoctor-local-doctors',
+          JSON.stringify(parsed.map(doctor => (doctor.id === doctorUser.id ? { ...doctor, photo_url: photoUrl } : doctor)))
+        )
+      }
+    } catch {}
   }
 
   const handleLogout = () => {
     setAuthUser(null)
     setIsPremium(false)
+    setActivePage('chat')
   }
 
   const handleDoctorLogout = () => {
     setDoctorUser(null)
     setShowDoctorPortal(false)
+    setActivePage('chat')
+    setViewedDoctorProfile(null)
+  }
+
+  const handleOpenDoctorProfile = (doctor: { id: number; name: string; specialty: string; location: string }) => {
+    try {
+      const raw = localStorage.getItem('mydoctor-local-doctors')
+      const parsed = raw ? JSON.parse(raw) : []
+      const matched = Array.isArray(parsed) ? parsed.find(item => item.id === doctor.id) : null
+
+      setViewedDoctorProfile({
+        id: doctor.id,
+        name: matched?.name ?? doctor.name,
+        email: matched?.email ?? `${doctor.name.toLowerCase().replace(/\s+/g, '.')}@mydoctor.local`,
+        specialty: matched?.specialty ?? doctor.specialty,
+        location: matched?.location ?? doctor.location,
+        is_authorized: Boolean(matched?.is_authorized),
+        photo_url: matched?.photo_url,
+      })
+      setShowDoctorPortal(false)
+      setShowPremiumPage(false)
+      setShowAdminDashboard(false)
+      setActivePage('profile')
+    } catch {
+      setViewedDoctorProfile({
+        id: doctor.id,
+        name: doctor.name,
+        email: `${doctor.name.toLowerCase().replace(/\s+/g, '.')}@mydoctor.local`,
+        specialty: doctor.specialty,
+        location: doctor.location,
+        is_authorized: false,
+      })
+      setShowDoctorPortal(false)
+      setShowPremiumPage(false)
+      setShowAdminDashboard(false)
+      setActivePage('profile')
+    }
   }
 
   const handleRedeemReferralMonth = async () => {
@@ -311,6 +435,12 @@ function App() {
 
   const referralCode = authUser ? buildReferralCode(authUser.id) : 'MYDOC-GUEST'
   const referralLink = authUser ? buildReferralLink(authUser.id) : window.location.href
+  const userConsultationCount = authUser
+    ? loadLocalConsultations().filter(consultation => consultation.user_id === authUser.id).length
+    : 0
+  const doctorConsultationCount = doctorUser
+    ? listDoctorLocalConsultations(doctorUser.id).length
+    : 0
 
   const currentLangLabel = languages.find(language => language.code === currentLang)?.label || 'EN'
 
@@ -337,18 +467,7 @@ function App() {
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2 xl:max-w-[72%]">
-            {!doctorUser && authUser ? (
-              <button
-                onClick={handleLogout}
-                className="btn-ghost flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold"
-                title={t('logout', { defaultValue: 'Log out' })}
-              >
-                <User className="w-4 h-4" />
-                <span className="hidden md:inline max-w-[9rem] truncate">
-                  {authUser.username || authUser.email}
-                </span>
-              </button>
-            ) : !doctorUser ? (
+            {!authUser && !doctorUser ? (
               <button
                 onClick={() => setShowAuthModal(true)}
                 className="btn-ghost flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold"
@@ -363,7 +482,10 @@ function App() {
             {doctorUser ? (
               <>
                 <button
-                  onClick={() => setShowDoctorPortal(true)}
+                  onClick={() => {
+                    setShowDoctorPortal(true)
+                    setActivePage('chat')
+                  }}
                   className={`btn-ghost flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold ${
                     showDoctorPortal ? 'text-brand-700 dark:text-brand-300' : ''
                   }`}
@@ -377,17 +499,8 @@ function App() {
                     </span>
                   )}
                 </button>
-                <button
-                  onClick={handleDoctorLogout}
-                  className="btn-ghost flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold"
-                  title={t('logout')}
-                >
-                  <span className="hidden xl:inline max-w-[12rem] truncate">
-                    {doctorUser.name} {doctorUser.is_authorized ? `- ${t('doctorApprovedShort')}` : `- ${t('doctorPendingShort')}`}
-                  </span>
-                </button>
               </>
-            ) : (
+            ) : !authUser ? (
               <button
                 onClick={() => setShowDoctorAuthModal(true)}
                 className="btn-ghost flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold"
@@ -396,7 +509,7 @@ function App() {
                 <BriefcaseMedical className="w-4 h-4" />
                 <span className="hidden md:inline">{t('doctorLoginTitle')}</span>
               </button>
-            )}
+            ) : null}
 
             <div className="relative">
               <button
@@ -447,6 +560,23 @@ function App() {
               <BrainCircuit className="w-4 h-4" />
               <span className="hidden md:inline">
                 {t('predictorNav', { defaultValue: 'AI predictor' })}
+              </span>
+            </button>
+
+            <button
+              onClick={() => {
+                setShowDoctorPortal(false)
+                setViewedDoctorProfile(null)
+                setActivePage(value => (value === 'wellness' ? 'chat' : 'wellness'))
+              }}
+              className={`btn-ghost flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold ${
+                activePage === 'wellness' ? 'text-cyan-700 dark:text-cyan-300' : ''
+              }`}
+              title={t('mentalWellnessNav', { defaultValue: 'Mental wellness support' })}
+            >
+              <HeartHandshake className="w-4 h-4" />
+              <span className="hidden md:inline">
+                {t('mentalWellnessNav', { defaultValue: 'Mental wellness support' })}
               </span>
             </button>
 
@@ -504,7 +634,7 @@ function App() {
           />
         ) : showPremiumPage ? (
           <PremiumPage
-            isPremium={isPremium}
+            isPremium={doctorUser && !authUser ? Boolean(doctorUser.is_premium) : isPremium}
             onActivate={handleActivatePremium}
             onDeactivate={handleDeactivatePremium}
             onBack={() => setShowPremiumPage(false)}
@@ -515,6 +645,21 @@ function App() {
             referralCode={referralCode}
             referralLink={referralLink}
             onRedeemReferralMonth={handleRedeemReferralMonth}
+            accountType={doctorUser && !authUser ? 'doctor' : 'user'}
+          />
+        ) : activePage === 'profile' && (authUser || doctorUser || viewedDoctorProfile) ? (
+          <ProfilePage
+            authUser={authUser}
+            doctorUser={viewedDoctorProfile ?? doctorUser}
+            consultationCount={viewedDoctorProfile ? 0 : doctorUser ? doctorConsultationCount : userConsultationCount}
+            onBack={() => {
+              setActivePage('chat')
+              setViewedDoctorProfile(null)
+            }}
+            onLogout={viewedDoctorProfile ? () => setActivePage('chat') : doctorUser ? handleDoctorLogout : handleLogout}
+            onPhotoChange={viewedDoctorProfile ? undefined : doctorUser ? handleDoctorPhotoChange : handleUserPhotoChange}
+            canEdit={!viewedDoctorProfile}
+            canLogout={!viewedDoctorProfile}
           />
         ) : doctorUser && showDoctorPortal ? (
           <ConsultationPanel
@@ -528,9 +673,19 @@ function App() {
             storageMode="local"
             variant="page"
             onClose={() => setShowDoctorPortal(false)}
+            onOpenProfile={() => {
+              setViewedDoctorProfile(null)
+              setShowDoctorPortal(false)
+              setActivePage('profile')
+            }}
+            isPremiumDoctor={Boolean(doctorUser.is_premium)}
           />
         ) : activePage === 'predictor' ? (
           <DiseasePredictorPage />
+        ) : activePage === 'wellness' ? (
+          <MentalWellnessPage
+            onBack={() => setActivePage('chat')}
+          />
         ) : (
           <ChatBox
             isPremium={isPremium}
@@ -539,6 +694,21 @@ function App() {
             language={currentLang}
             onOpenPremium={() => setShowPremiumPage(true)}
             onRequireAuth={() => setShowAuthModal(true)}
+            onViewDoctorProfile={handleOpenDoctorProfile}
+            onOpenWellness={() => {
+              setShowDoctorPortal(false)
+              setViewedDoctorProfile(null)
+              setActivePage('wellness')
+            }}
+            onOpenProfile={
+              authUser
+                ? () => {
+                    setViewedDoctorProfile(null)
+                    setShowDoctorPortal(false)
+                    setActivePage('profile')
+                  }
+                : undefined
+            }
           />
         )}
       </main>

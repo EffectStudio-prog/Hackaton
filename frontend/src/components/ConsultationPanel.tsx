@@ -1,15 +1,23 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, CalendarClock, LoaderCircle, MessageCircle, MessagesSquare, Send, Stethoscope, X } from 'lucide-react'
+import { ArrowLeft, BrainCircuit, CalendarClock, CheckCircle2, LoaderCircle, MessageCircle, MessagesSquare, Paperclip, Send, Sparkles, Stethoscope, Trash2, UserCircle2, X } from 'lucide-react'
 
+import AttachmentList from './AttachmentList'
+import DiseasePredictorPage from './DiseasePredictorPage'
 import { apiFetch } from '../utils/api'
 import {
   appendLocalConsultationMessage,
+  completeDoctorReservation,
+  deleteDoctorReservation,
+  deleteLocalConsultation,
   getDoctorQueueSlots,
   getLocalConsultation,
   listDoctorLocalConsultations,
+  updateLocalConsultationStatus,
   type DoctorQueueSlot,
+  type SharedAttachment,
 } from '../utils/doctorPortal'
+import { createSharedAttachment } from '../utils/fileUploads'
 
 interface ConsultationMessage {
   id: number
@@ -17,6 +25,7 @@ interface ConsultationMessage {
   sender_id: number
   content: string
   created_at: string
+  attachments?: SharedAttachment[]
 }
 
 interface Consultation {
@@ -54,6 +63,8 @@ interface ConsultationPanelProps {
   variant?: 'modal' | 'page'
   demoSession?: DemoSession | null
   storageMode?: 'local' | 'remote'
+  onOpenProfile?: () => void
+  isPremiumDoctor?: boolean
 }
 
 const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
@@ -65,17 +76,32 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
   variant = 'modal',
   demoSession = null,
   storageMode = 'remote',
+  onOpenProfile,
+  isPremiumDoctor = false,
 }) => {
   const { t } = useTranslation()
+  const SIDEBAR_VISIBLE_ITEMS = 5
   const [consultations, setConsultations] = useState<Consultation[]>([])
   const [queueSlots, setQueueSlots] = useState<DoctorQueueSlot[]>([])
   const [selectedConsultationId, setSelectedConsultationId] = useState<number | null>(initialConsultationId)
   const [message, setMessage] = useState('')
+  const [selectedAttachments, setSelectedAttachments] = useState<SharedAttachment[]>([])
   const [error, setError] = useState('')
   const [isBusy, setIsBusy] = useState(false)
-  const [doctorView, setDoctorView] = useState<'consultations' | 'queue'>('consultations')
+  const [doctorView, setDoctorView] = useState<'consultations' | 'queue' | 'predictor'>('consultations')
+  const [aiReplyDraft, setAiReplyDraft] = useState('')
+  const [showAllConsultations, setShowAllConsultations] = useState(false)
+  const [showAllQueue, setShowAllQueue] = useState(false)
   const isDemo = !!demoSession
   const isLocal = storageMode === 'local' && !isDemo
+
+  const buildDoctorAutoReply = useCallback((patientMessage: string) => {
+    const trimmed = patientMessage.trim()
+    return t('doctorBookingDraft', {
+      defaultValue:
+        'Salom. Ko‘rik uchun vaqt band qilishimiz mumkin. Sizga qulay kun va vaqtni yozib yuboring. Agar istasangiz, bugun yoki ertaga bo‘sh vaqtlarni ham taklif qilaman.',
+    }) + (trimmed ? `\n\n${t('doctorBookingDraftContext', { defaultValue: 'Qisqa izoh:' })} ${trimmed.slice(0, 140)}` : '')
+  }, [t])
 
   const fetchConsultation = useCallback(async (consultationId: number) => {
     const response = await apiFetch(`/consultations/${consultationId}?actor_type=${actorType}&actor_id=${actorId}`)
@@ -247,6 +273,11 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
     [consultations, selectedConsultationId]
   )
 
+  const latestPatientMessage = useMemo(
+    () => [...(selectedConsultation?.messages || [])].reverse().find(item => item.sender_type === 'user')?.content || '',
+    [selectedConsultation]
+  )
+
   const pendingRequestCount = useMemo(
     () =>
       consultations.filter(consultation => {
@@ -255,6 +286,12 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
       }).length,
     [consultations]
   )
+  const visibleConsultations = showAllConsultations
+    ? consultations
+    : consultations.slice(0, SIDEBAR_VISIBLE_ITEMS)
+  const visibleQueueSlots = showAllQueue
+    ? queueSlots
+    : queueSlots.slice(0, SIDEBAR_VISIBLE_ITEMS)
 
   const timeFormatter = useMemo(
     () =>
@@ -266,7 +303,7 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
   )
 
   const handleSend = async () => {
-    if (!selectedConsultationId || !message.trim() || isBusy) return
+    if (!selectedConsultationId || (!message.trim() && selectedAttachments.length === 0) || isBusy) return
 
     if (isDemo) {
       const userMessage = message.trim()
@@ -288,6 +325,7 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
                     sender_id: actorId,
                     content: userMessage,
                     created_at: sentAt,
+                    attachments: selectedAttachments,
                   },
                   {
                     id: Date.now() + 1,
@@ -305,6 +343,7 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
         )
       )
       setMessage('')
+      setSelectedAttachments([])
       return
     }
 
@@ -314,6 +353,7 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
         actorType,
         actorId,
         content: message,
+        attachments: selectedAttachments,
       })
       if (consultation) {
         setConsultations(previous => {
@@ -325,6 +365,7 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
         }
       }
       setMessage('')
+      setSelectedAttachments([])
       return
     }
 
@@ -354,6 +395,7 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
       })
       setSelectedConsultationId(consultation.id)
       setMessage('')
+      setSelectedAttachments([])
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : t('consultationSendError'))
     } finally {
@@ -361,42 +403,113 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
     }
   }
 
+  const handleAttachmentUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files
+    if (!files?.length) return
+
+    try {
+      const nextAttachments = await Promise.all(Array.from(files).map(createSharedAttachment))
+      setSelectedAttachments(previous => [...previous, ...nextAttachments].slice(0, 4))
+    } catch (uploadError) {
+      setError(
+        uploadError instanceof Error && uploadError.message === 'file_too_large'
+          ? t('fileTooLarge', { defaultValue: 'Each file must be smaller than 8 MB.' })
+          : t('fileUploadFailed', { defaultValue: 'Could not read the selected file.' })
+      )
+    } finally {
+      event.target.value = ''
+    }
+  }, [t])
+
+  const handleMarkConsultationDone = useCallback((consultationId: number) => {
+    if (!isLocal) return
+    updateLocalConsultationStatus({ consultationId, status: 'done' })
+    if (selectedConsultationId === consultationId) {
+      setSelectedConsultationId(consultationId)
+    }
+    if (actorType === 'doctor') {
+      loadLocalDoctorData()
+    } else {
+      loadLocalUserConsultation()
+    }
+  }, [actorType, isLocal, loadLocalDoctorData, loadLocalUserConsultation, selectedConsultationId])
+
+  const handleDeleteConsultation = useCallback((consultationId: number) => {
+    if (!isLocal) return
+    const remaining = deleteLocalConsultation(consultationId)
+    if (selectedConsultationId === consultationId) {
+      setSelectedConsultationId(remaining[0]?.id ?? null)
+    }
+    if (actorType === 'doctor') {
+      loadLocalDoctorData()
+    } else {
+      loadLocalUserConsultation()
+    }
+  }, [actorType, isLocal, loadLocalDoctorData, loadLocalUserConsultation, selectedConsultationId])
+
+  const handleQueueDone = useCallback((reserverKey: string) => {
+    completeDoctorReservation({ doctorId: actorId, reserverKey })
+    loadLocalDoctorData()
+  }, [actorId, loadLocalDoctorData])
+
+  const handleQueueDelete = useCallback((reserverKey: string) => {
+    deleteDoctorReservation({ doctorId: actorId, reserverKey })
+    loadLocalDoctorData()
+  }, [actorId, loadLocalDoctorData])
+
   const isPage = variant === 'page'
 
   return (
     <div className={isPage ? 'h-full min-h-0 flex flex-col' : 'fixed inset-0 z-[90] bg-gray-950/45 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5'}>
       <div className={`${isPage ? 'glass-card h-full w-full overflow-hidden flex' : 'glass-card w-full max-w-6xl h-[85vh] overflow-hidden flex'}`}>
         {actorType === 'doctor' && (
-          <aside className="w-72 border-r border-white/50 dark:border-gray-700/50 bg-white/35 dark:bg-gray-900/30 hidden md:flex flex-col">
+          <aside className="w-72 lg:w-80 border-r border-white/50 dark:border-gray-700/50 bg-white/35 dark:bg-gray-900/30 hidden md:flex flex-col">
             <div className="p-3 border-b border-white/50 dark:border-gray-700/50 space-y-2">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">
                 {t('doctorPortalTitle')}
               </p>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2">
                 <button
                   onClick={() => setDoctorView('consultations')}
-                  className={`rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${
+                  className={`rounded-2xl px-3 py-3 text-xs font-semibold transition-colors ${
                     doctorView === 'consultations'
                       ? 'bg-brand-600 text-white'
                       : 'bg-white/70 dark:bg-gray-900/60 text-gray-700 dark:text-gray-300'
                   }`}
                 >
-                  <span className="inline-flex items-center gap-2">
-                    <MessagesSquare className="h-4 w-4" />
-                    {t('doctorConsultations')}
+                  <span className="inline-flex w-full items-center gap-3 text-left leading-5">
+                    <MessagesSquare className="h-4 w-4 flex-shrink-0" />
+                    <span className="break-words whitespace-normal">{t('doctorConsultations')}</span>
                   </span>
                 </button>
                 <button
                   onClick={() => setDoctorView('queue')}
-                  className={`rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${
+                  className={`rounded-2xl px-3 py-3 text-xs font-semibold transition-colors ${
                     doctorView === 'queue'
                       ? 'bg-brand-600 text-white'
                       : 'bg-white/70 dark:bg-gray-900/60 text-gray-700 dark:text-gray-300'
                   }`}
                 >
-                  <span className="inline-flex items-center gap-2">
-                    <CalendarClock className="h-4 w-4" />
-                    {t('doctorQueuePage', { defaultValue: 'Queue page' })}
+                  <span className="inline-flex w-full items-center gap-3 text-left leading-5">
+                    <CalendarClock className="h-4 w-4 flex-shrink-0" />
+                    <span className="break-words whitespace-normal">
+                      {t('doctorQueuePage', { defaultValue: 'Queue page' })}
+                    </span>
+                  </span>
+                </button>
+                <button
+                  onClick={() => setDoctorView('predictor')}
+                  className={`rounded-2xl px-3 py-3 text-xs font-semibold transition-colors ${
+                    doctorView === 'predictor'
+                      ? 'bg-brand-600 text-white'
+                      : 'bg-white/70 dark:bg-gray-900/60 text-gray-700 dark:text-gray-300'
+                  }`}
+                >
+                  <span className="inline-flex w-full items-center gap-3 text-left leading-5">
+                    <BrainCircuit className="h-4 w-4 flex-shrink-0" />
+                    <span className="break-words whitespace-normal">
+                      {t('predictorNav', { defaultValue: 'AI predictor' })}
+                    </span>
                   </span>
                 </button>
               </div>
@@ -410,85 +523,189 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
               )}
             </div>
 
-            <div className="flex-1 overflow-y-auto p-3 space-y-2">
-              {doctorView === 'consultations' ? (
-                consultations.length === 0 ? (
-                  <div className="rounded-2xl bg-white/70 dark:bg-gray-900/60 p-3 text-xs leading-6 text-gray-500 dark:text-gray-400">
-                    {t('doctorConsultationsEmpty')}
-                  </div>
-                ) : (
-                  consultations.map(consultation => {
+            <div className="min-h-0 flex-1 flex flex-col p-3">
+              <div className="flex-1 overflow-y-auto space-y-2">
+                {doctorView === 'consultations' ? (
+                  consultations.length === 0 ? (
+                    <div className="rounded-2xl bg-white/70 dark:bg-gray-900/60 p-3 text-xs leading-6 text-gray-500 dark:text-gray-400">
+                      {t('doctorConsultationsEmpty')}
+                    </div>
+                  ) : (
+                    visibleConsultations.map(consultation => {
                     const lastMessage = consultation.messages[consultation.messages.length - 1]
                     const hasPendingReply = !lastMessage || lastMessage.sender_type === 'user'
                     return (
-                      <button
+                      <div
                         key={consultation.id}
-                        onClick={() => {
-                          setDoctorView('consultations')
-                          setSelectedConsultationId(consultation.id)
-                        }}
                         className={`w-full text-left rounded-2xl p-3 border transition-colors ${
                           selectedConsultationId === consultation.id
                             ? 'bg-brand-50 border-brand-200 text-brand-800 dark:bg-brand-900/20 dark:border-brand-700 dark:text-brand-100'
                             : 'bg-white/70 dark:bg-gray-900/60 border-white/60 dark:border-gray-700 text-gray-700 dark:text-gray-300'
                         }`}
                       >
-                        <div className="flex items-start justify-between gap-2">
-                          <p className="text-sm font-semibold truncate">
-                            {consultation.patient_label || consultation.patient_email}
+                        <button
+                          onClick={() => {
+                            setDoctorView('consultations')
+                            setSelectedConsultationId(consultation.id)
+                          }}
+                          className="w-full text-left"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <p className="min-w-0 text-sm font-semibold break-words">
+                              {consultation.patient_label || consultation.patient_email}
+                            </p>
+                            <div className="flex items-center gap-1">
+                              {consultation.status === 'done' && (
+                                <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200">
+                                  {t('sessionDone', { defaultValue: 'Done' })}
+                                </span>
+                              )}
+                              {hasPendingReply && consultation.status !== 'done' && (
+                                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+                                  {t('newRequestBadge', { defaultValue: 'New' })}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <p className="mt-1 text-xs opacity-75 break-words">
+                            {lastMessage?.content || t('consultationReady')}
                           </p>
-                          {hasPendingReply && (
-                            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
-                              {t('newRequestBadge', { defaultValue: 'New' })}
-                            </span>
-                          )}
-                        </div>
-                        <p className="mt-1 text-xs opacity-75 truncate">
-                          {lastMessage?.content || t('consultationReady')}
-                        </p>
-                      </button>
+                        </button>
+                        {isLocal && (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button
+                              onClick={event => {
+                                event.stopPropagation()
+                                handleMarkConsultationDone(consultation.id)
+                              }}
+                              className="inline-flex items-center gap-1 rounded-xl bg-emerald-50 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200"
+                            >
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                              {t('markDone', { defaultValue: 'Done' })}
+                            </button>
+                            <button
+                              onClick={event => {
+                                event.stopPropagation()
+                                handleDeleteConsultation(consultation.id)
+                              }}
+                              className="inline-flex items-center gap-1 rounded-xl bg-red-50 px-2.5 py-1.5 text-[11px] font-semibold text-red-700 dark:bg-red-500/10 dark:text-red-200"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              {t('deleteLabel', { defaultValue: 'Delete' })}
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     )
-                  })
-                )
-              ) : queueSlots.length === 0 ? (
-                <div className="rounded-2xl bg-white/70 dark:bg-gray-900/60 p-3 text-xs leading-6 text-gray-500 dark:text-gray-400">
-                  {t('doctorQueueEmpty', { defaultValue: 'No reserved patients in the queue yet.' })}
-                </div>
-              ) : (
-                queueSlots.map(slot => (
-                  <div
-                    key={`${slot.reserverKey}-${slot.queueNumber}`}
-                    className="rounded-2xl border border-white/60 bg-white/70 p-3 text-gray-700 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-300"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="text-sm font-semibold">{slot.patientLabel}</p>
-                      <span className="rounded-full bg-brand-50 px-2 py-1 text-[10px] font-semibold text-brand-700 dark:bg-brand-900/20 dark:text-brand-200">
-                        {t('queueNumber', { number: slot.queueNumber })}
-                      </span>
-                    </div>
-                    <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                      {t('consultationSlot', {
-                        start: timeFormatter.format(new Date(slot.startsAt)),
-                        end: timeFormatter.format(new Date(slot.endsAt)),
-                        defaultValue: 'Session: {{start}} - {{end}}',
-                      })}
-                    </p>
-                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      {t('reservedByLabel', {
-                        name: slot.patientLabel,
-                        defaultValue: 'Reserved by: {{name}}',
-                      })}
-                    </p>
-                    <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">
-                      {t('reservedAtLabel', {
-                        time: timeFormatter.format(new Date(slot.reservedAt)),
-                        defaultValue: 'Reserved at {{time}}',
-                      })}
-                    </p>
+                    })
+                  )
+                ) : doctorView === 'queue' ? queueSlots.length === 0 ? (
+                  <div className="rounded-2xl bg-white/70 dark:bg-gray-900/60 p-3 text-xs leading-6 text-gray-500 dark:text-gray-400">
+                    {t('doctorQueueEmpty', { defaultValue: 'No reserved patients in the queue yet.' })}
                   </div>
-                ))
+                ) : (
+                  visibleQueueSlots.map(slot => (
+                    <div
+                      key={`${slot.reserverKey}-${slot.queueNumber}`}
+                      className="rounded-2xl border border-white/60 bg-white/70 p-3 text-gray-700 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-300"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-sm font-semibold">{slot.patientLabel}</p>
+                        <span className="rounded-full bg-brand-50 px-2 py-1 text-[10px] font-semibold text-brand-700 dark:bg-brand-900/20 dark:text-brand-200">
+                          {t('queueNumber', { number: slot.queueNumber })}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                        {t('consultationSlot', {
+                          start: timeFormatter.format(new Date(slot.startsAt)),
+                          end: timeFormatter.format(new Date(slot.endsAt)),
+                          defaultValue: 'Session: {{start}} - {{end}}',
+                        })}
+                      </p>
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {t('reservedByLabel', {
+                          name: slot.patientLabel,
+                          defaultValue: 'Reserved by: {{name}}',
+                        })}
+                      </p>
+                      <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">
+                        {t('reservedAtLabel', {
+                          time: timeFormatter.format(new Date(slot.reservedAt)),
+                          defaultValue: 'Reserved at {{time}}',
+                        })}
+                      </p>
+                      <div className="mt-3 flex gap-2">
+                        <button
+                          onClick={() => handleQueueDone(slot.reserverKey)}
+                          className="inline-flex items-center gap-1 rounded-xl bg-emerald-50 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200"
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          {t('markDone', { defaultValue: 'Done' })}
+                        </button>
+                        <button
+                          onClick={() => handleQueueDelete(slot.reserverKey)}
+                          className="inline-flex items-center gap-1 rounded-xl bg-red-50 px-2.5 py-1.5 text-[11px] font-semibold text-red-700 dark:bg-red-500/10 dark:text-red-200"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          {t('deleteLabel', { defaultValue: 'Delete' })}
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-2xl bg-white/70 dark:bg-gray-900/60 p-3 text-xs leading-6 text-gray-500 dark:text-gray-400">
+                    {t('predictorTitle', { defaultValue: 'Symptom-based disease prediction' })}
+                  </div>
+                )}
+              </div>
+
+              {doctorView === 'consultations' && consultations.length > SIDEBAR_VISIBLE_ITEMS && (
+                <div className="pt-2">
+                  <button
+                    onClick={() => setShowAllConsultations(value => !value)}
+                    className="btn-ghost w-full px-3 py-2 text-xs font-semibold"
+                  >
+                    {showAllConsultations
+                      ? t('showLess', { defaultValue: 'Show less' })
+                      : t('showMore', { defaultValue: 'Show more' })}
+                  </button>
+                </div>
+              )}
+
+              {doctorView === 'queue' && queueSlots.length > SIDEBAR_VISIBLE_ITEMS && (
+                <div className="pt-2">
+                  <button
+                    onClick={() => setShowAllQueue(value => !value)}
+                    className="btn-ghost w-full px-3 py-2 text-xs font-semibold"
+                  >
+                    {showAllQueue
+                      ? t('showLess', { defaultValue: 'Show less' })
+                      : t('showMore', { defaultValue: 'Show more' })}
+                  </button>
+                </div>
               )}
             </div>
+
+            {actorType === 'doctor' && onOpenProfile && (
+              <div className="border-t border-white/50 p-3 dark:border-gray-700/50">
+                <button
+                  onClick={onOpenProfile}
+                  className="w-full rounded-2xl border border-slate-200/80 bg-white/80 px-3 py-3 text-left transition-colors hover:border-brand-300 hover:bg-brand-50/60 dark:border-slate-700 dark:bg-slate-900/70 dark:hover:border-brand-700 dark:hover:bg-brand-900/20"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <UserCircle2 className="h-4 w-4 text-brand-500" />
+                    <span>
+                      <span className="block text-sm font-semibold text-slate-900 dark:text-white">
+                        {t('doctorProfile', { defaultValue: 'Doctor profile' })}
+                      </span>
+                      <span className="block text-xs text-slate-500 dark:text-slate-400">
+                        {t('viewDoctor', { defaultValue: 'View Profile' })}
+                      </span>
+                    </span>
+                  </span>
+                </button>
+              </div>
+            )}
           </aside>
         )}
 
@@ -499,6 +716,8 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
                 {actorType === 'doctor'
                   ? doctorView === 'queue'
                     ? t('doctorQueuePage', { defaultValue: 'Queue page' })
+                    : doctorView === 'predictor'
+                      ? t('predictorNav', { defaultValue: 'AI predictor' })
                     : t('doctorPortalTitle')
                   : t('doctorConsultationTitle')}
               </p>
@@ -506,6 +725,8 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
                 {actorType === 'doctor'
                   ? doctorView === 'queue'
                     ? t('doctorQueueTitle', { defaultValue: 'Reserved patients' })
+                    : doctorView === 'predictor'
+                      ? t('predictorTitle', { defaultValue: 'Symptom-based disease prediction' })
                     : selectedConsultation?.patient_label || selectedConsultation?.patient_email || t('doctorConsultations')
                   : doctor?.name || selectedConsultation?.doctor_name || t('doctorConsultationTitle')}
               </h2>
@@ -516,6 +737,10 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
                         minutes: 30,
                         defaultValue: 'Each consultation session is {{minutes}} minutes.',
                       })
+                    : doctorView === 'predictor'
+                      ? t('predictorSubtitle', {
+                          defaultValue: 'Choose symptoms manually or describe them in free text. The system extracts symptoms, predicts the top diseases, and explains the confidence.',
+                        })
                     : selectedConsultation?.doctor_specialty || t('consultationReady')
                   : doctor?.specialty || selectedConsultation?.doctor_specialty || t('consultationReady')}
               </p>
@@ -540,7 +765,9 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
             </div>
           )}
 
-          {actorType === 'doctor' && doctorView === 'queue' ? (
+          {actorType === 'doctor' && doctorView === 'predictor' ? (
+            <DiseasePredictorPage />
+          ) : actorType === 'doctor' && doctorView === 'queue' ? (
             <div className="flex-1 overflow-y-auto px-4 py-4">
               {queueSlots.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center px-6">
@@ -592,6 +819,22 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
                           })}
                         </p>
                       </div>
+                      <div className="mt-4 flex gap-2">
+                        <button
+                          onClick={() => handleQueueDone(slot.reserverKey)}
+                          className="inline-flex items-center gap-1 rounded-xl bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200"
+                        >
+                          <CheckCircle2 className="h-4 w-4" />
+                          {t('markDone', { defaultValue: 'Done' })}
+                        </button>
+                        <button
+                          onClick={() => handleQueueDelete(slot.reserverKey)}
+                          className="inline-flex items-center gap-1 rounded-xl bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 dark:bg-red-500/10 dark:text-red-200"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          {t('deleteLabel', { defaultValue: 'Delete' })}
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -610,7 +853,39 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
                     </p>
                   </div>
                 ) : (
-                  selectedConsultation.messages.map(item => {
+                  <>
+                    {actorType === 'doctor' && isPremiumDoctor && (
+                      <div className="rounded-3xl border border-violet-200 bg-violet-50/90 p-4 dark:border-violet-900/30 dark:bg-violet-500/10">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div>
+                            <p className="inline-flex items-center gap-2 text-sm font-semibold text-violet-700 dark:text-violet-200">
+                              <Sparkles className="h-4 w-4" />
+                              {t('doctorAutoReplyTitle', { defaultValue: 'Premium booking reply' })}
+                            </p>
+                            <p className="mt-1 text-xs leading-6 text-violet-700/80 dark:text-violet-200/80">
+                              {t('doctorAutoReplySubtitle', { defaultValue: 'This only prepares a short appointment-booking reply. It does not write medical advice.' })}
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => {
+                              const generated = buildDoctorAutoReply(latestPatientMessage)
+                              setAiReplyDraft(generated)
+                              setMessage(generated)
+                            }}
+                            disabled={!latestPatientMessage}
+                            className="rounded-2xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-700 disabled:opacity-60"
+                          >
+                            {t('generateAiReply', { defaultValue: 'Generate booking reply' })}
+                          </button>
+                        </div>
+                        {aiReplyDraft && (
+                          <div className="mt-3 rounded-2xl bg-white/80 p-3 text-sm leading-6 text-slate-700 dark:bg-slate-900/70 dark:text-slate-200">
+                            {aiReplyDraft}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {selectedConsultation.messages.map(item => {
                     const isOwn = item.sender_type === actorType
                     return (
                       <div key={item.id} className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
@@ -620,31 +895,55 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
                             : 'bg-white/80 dark:bg-gray-900/70 text-gray-800 dark:text-gray-100 rounded-bl-sm'
                         }`}>
                           {item.content}
+                          <AttachmentList attachments={item.attachments} compact />
                         </div>
                       </div>
                     )
-                  })
+                    })}
+                  </>
                 )}
               </div>
 
               <div className="p-4 border-t border-white/50 dark:border-gray-700/50">
-                <div className="glass-card p-2 flex items-end gap-2">
+                <div className="chat-composer">
+                  {selectedAttachments.length > 0 && (
+                    <div className="mb-3">
+                      <AttachmentList attachments={selectedAttachments} />
+                      <button
+                        onClick={() => setSelectedAttachments([])}
+                        className="btn-ghost mt-2 px-3 py-1.5 text-xs"
+                      >
+                        {t('clearAttachments', { defaultValue: 'Clear attachments' })}
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex items-end gap-2">
+                    <input type="file" className="hidden" id="consultation-upload" multiple onChange={handleAttachmentUpload} />
                   <textarea
                     value={message}
                     onChange={event => setMessage(event.target.value)}
                     placeholder={t('consultationPlaceholder')}
-                    className="input-field flex-1 border-0 bg-transparent focus:ring-0 min-h-[52px] max-h-[140px]"
+                    className="input-field flex-1 border-0 bg-transparent focus:ring-0 min-h-[52px] max-h-[140px] shadow-none px-0"
                     rows={1}
                     disabled={!selectedConsultation || isBusy}
                   />
+                    <label
+                      htmlFor="consultation-upload"
+                      className="composer-icon-button cursor-pointer"
+                      aria-label={t('uploadFile', { defaultValue: 'Upload a file' })}
+                      title={t('uploadFile', { defaultValue: 'Upload a file' })}
+                    >
+                      <Paperclip className="w-4 h-4" />
+                    </label>
                   <button
                     onClick={handleSend}
-                    disabled={!selectedConsultation || !message.trim() || isBusy}
+                    disabled={!selectedConsultation || (!message.trim() && selectedAttachments.length === 0) || isBusy}
                     className="btn-primary w-11 h-11 p-0 flex items-center justify-center"
                     aria-label={t('send')}
                   >
                     {isBusy ? <LoaderCircle className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                   </button>
+                  </div>
                 </div>
               </div>
             </>

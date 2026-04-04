@@ -14,6 +14,7 @@ interface PremiumPageProps {
   referralCode: string
   referralLink: string
   onRedeemReferralMonth: () => void
+  accountType?: 'user' | 'doctor'
 }
 
 const PremiumPage: React.FC<PremiumPageProps> = ({
@@ -28,6 +29,7 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
   referralCode,
   referralLink,
   onRedeemReferralMonth,
+  accountType = 'user',
 }) => {
   const { t } = useTranslation()
   const [selectedPlan, setSelectedPlan] = useState('yearly')
@@ -68,6 +70,24 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
       icon: ShieldCheck,
       title: t('premiumFeatureMap'),
       description: t('premiumFeatureMapDesc'),
+    },
+    {
+      icon: BadgeCheck,
+      title: accountType === 'doctor'
+        ? t('premiumDoctorAutoReply', { defaultValue: 'AI auto-reply drafts' })
+        : t('premiumFeaturePriority', { defaultValue: 'Priority triage mode' }),
+      description: accountType === 'doctor'
+        ? t('premiumDoctorAutoReplyDesc', { defaultValue: 'Generate patient-safe response drafts inside consultations with one click.' })
+        : t('premiumFeaturePriorityDesc', { defaultValue: 'Get clearer summaries, richer prediction cards, and faster premium care suggestions.' }),
+    },
+    {
+      icon: Users,
+      title: accountType === 'doctor'
+        ? t('premiumDoctorInsights', { defaultValue: 'Patient conversation insights' })
+        : t('premiumFeatureFamily', { defaultValue: 'Family care shortcuts' }),
+      description: accountType === 'doctor'
+        ? t('premiumDoctorInsightsDesc', { defaultValue: 'See stronger consultation workflow tools for handling multiple patients smoothly.' })
+        : t('premiumFeatureFamilyDesc', { defaultValue: 'Save more history and move faster when checking symptoms for family members.' }),
     },
   ]
 
@@ -120,10 +140,14 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
                 {isPremium ? t('premiumActive') : t('premiumHeading')}
               </div>
               <h2 className="mt-4 text-3xl font-black tracking-tight text-slate-900 dark:text-white sm:text-4xl">
-                {t('premiumTitle')}
+                {accountType === 'doctor'
+                  ? t('doctorPremiumTitle', { defaultValue: 'Upgrade your doctor workspace' })
+                  : t('premiumTitle')}
               </h2>
               <p className="mt-3 text-sm leading-7 text-slate-600 dark:text-slate-300 sm:text-base">
-                {t('premiumSubtitle')}
+                {accountType === 'doctor'
+                  ? t('doctorPremiumSubtitle', { defaultValue: 'Doctor Premium adds AI-assisted draft replies, stronger consultation workflow support, and a more powerful portal experience.' })
+                  : t('premiumSubtitle')}
               </p>
 
               <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-4">
@@ -173,6 +197,7 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
                 ))}
               </div>
 
+              {accountType === 'user' && (
               <div className="mt-5 rounded-2xl border border-brand-100 bg-brand-50/80 p-4 dark:border-brand-900/40 dark:bg-brand-900/20">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -232,6 +257,7 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
                   </p>
                 )}
               </div>
+              )}
 
               <div className="mt-5 space-y-3">
                 <input

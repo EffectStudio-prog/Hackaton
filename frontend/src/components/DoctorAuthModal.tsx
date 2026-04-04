@@ -1,6 +1,8 @@
 import React, { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Eye, EyeOff, LogIn, ShieldCheck, Stethoscope, UserPlus, X } from 'lucide-react'
+import { Eye, EyeOff, FileCheck2, LogIn, Paperclip, ShieldCheck, Stethoscope, UserPlus, X } from 'lucide-react'
+
+import { createSharedAttachment, type SharedAttachment } from '../utils/fileUploads'
 
 const DOCTOR_AUTH_DRAFT_KEY = 'mydoctor-doctor-auth-draft'
 const LOCAL_DOCTOR_KEY = 'mydoctor-local-doctors'
@@ -10,7 +12,11 @@ interface DoctorUser {
   name: string
   email: string
   specialty: string
+  location?: string
   is_authorized: boolean
+  diploma_status?: 'verified' | 'needs_review'
+  diploma_name?: string
+  is_premium?: boolean
 }
 
 interface DoctorAuthModalProps {
@@ -21,6 +27,20 @@ interface DoctorAuthModalProps {
 interface StoredDoctor extends DoctorUser {
   location: string
   password: string
+  diploma_file?: SharedAttachment
+}
+
+const evaluateDiploma = (attachment: SharedAttachment) => {
+  const normalizedName = attachment.name.toLowerCase()
+  const looksOfficial = /(diploma|certificate|license|medical|doctor|md|mbbs)/.test(normalizedName)
+  const allowedType = attachment.type.includes('pdf') || attachment.type.startsWith('image/')
+
+  return {
+    status: looksOfficial && allowedType ? 'verified' as const : 'needs_review' as const,
+    message: looksOfficial && allowedType
+      ? 'Diploma file looks valid for local verification.'
+      : 'The file was uploaded, but it should be reviewed manually.',
+  }
 }
 
 const loadStoredDoctors = (): StoredDoctor[] => {
@@ -105,8 +125,10 @@ const DoctorAuthModal: React.FC<DoctorAuthModalProps> = ({ onClose, onAuthentica
   })
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const [diplomaMessage, setDiplomaMessage] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [diplomaFile, setDiplomaFile] = useState<SharedAttachment | null>(null)
 
   const persistDraft = (next: {
     mode?: 'login' | 'signup'
@@ -131,6 +153,34 @@ const DoctorAuthModal: React.FC<DoctorAuthModalProps> = ({ onClose, onAuthentica
         })
       )
     } catch {}
+  }
+
+  const handleDiplomaUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) {
+      return
+    }
+
+    try {
+      const uploaded = await createSharedAttachment(file)
+      const evaluation = evaluateDiploma(uploaded)
+      setDiplomaFile(uploaded)
+      setDiplomaMessage(
+        t(
+          evaluation.status === 'verified' ? 'diplomaVerified' : 'diplomaNeedsReview',
+          { defaultValue: evaluation.message }
+        )
+      )
+      setError('')
+    } catch (uploadError) {
+      setError(
+        uploadError instanceof Error && uploadError.message === 'file_too_large'
+          ? t('fileTooLarge', { defaultValue: 'Each file must be smaller than 8 MB.' })
+          : t('fileUploadFailed', { defaultValue: 'Could not read the selected file.' })
+      )
+    } finally {
+      event.target.value = ''
+    }
   }
 
   const handleSubmit = async () => {
@@ -170,6 +220,11 @@ const DoctorAuthModal: React.FC<DoctorAuthModalProps> = ({ onClose, onAuthentica
       return
     }
 
+    if (mode === 'signup' && !diplomaFile) {
+      setError(t('diplomaRequired', { defaultValue: 'Upload a diploma or license file before registering.' }))
+      return
+    }
+
     setIsSubmitting(true)
     setError('')
 
@@ -189,6 +244,10 @@ const DoctorAuthModal: React.FC<DoctorAuthModalProps> = ({ onClose, onAuthentica
           specialty: cleanSpecialty,
           location: cleanLocation,
           is_authorized: false,
+          is_premium: false,
+          diploma_status: diplomaFile ? evaluateDiploma(diplomaFile).status : 'needs_review',
+          diploma_name: diplomaFile?.name,
+          diploma_file: diplomaFile ?? undefined,
           password: cleanPassword,
         }
         saveStoredDoctors([newDoctor, ...doctors])
@@ -302,6 +361,28 @@ const DoctorAuthModal: React.FC<DoctorAuthModalProps> = ({ onClose, onAuthentica
                 className="input-field text-sm"
                 onKeyDown={handleKeyDown}
               />
+              <label className="input-shell cursor-pointer">
+                <input type="file" className="hidden" accept=".pdf,image/*" onChange={handleDiplomaUpload} />
+                <span className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-brand-50 text-brand-700 dark:bg-brand-900/30 dark:text-brand-200">
+                  <Paperclip className="h-4 w-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold text-slate-900 dark:text-white">
+                    {diplomaFile?.name || t('uploadDiploma', { defaultValue: 'Upload diploma or license' })}
+                  </span>
+                  <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">
+                    {t('diplomaHint', { defaultValue: 'PDF, JPG, or PNG. The app performs a local filename and type check.' })}
+                  </span>
+                </span>
+              </label>
+              {diplomaMessage && (
+                <div className="rounded-2xl bg-emerald-50/80 p-3 text-xs leading-6 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200">
+                  <span className="inline-flex items-center gap-2 font-semibold">
+                    <FileCheck2 className="w-4 h-4" />
+                    {diplomaMessage}
+                  </span>
+                </div>
+              )}
             </>
           )}
           <input

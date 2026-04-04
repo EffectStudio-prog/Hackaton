@@ -17,6 +17,7 @@ interface DoctorCardProps {
   doctor: Doctor
   index: number
   onStartChat?: (doctor: Doctor) => void
+  onViewProfile?: (doctor: Doctor) => void
   reservationUserKey?: string
   reservationUserLabel?: string
 }
@@ -47,6 +48,7 @@ const DoctorCard: React.FC<DoctorCardProps> = ({
   doctor,
   index,
   onStartChat,
+  onViewProfile,
   reservationUserKey = 'guest',
   reservationUserLabel = 'Guest patient',
 }) => {
@@ -179,7 +181,7 @@ const DoctorCard: React.FC<DoctorCardProps> = ({
 
           <button
             className="flex w-full items-center justify-center gap-1 sm:gap-1.5 bg-brand-50 dark:bg-brand-900/40 hover:bg-brand-100 dark:hover:bg-brand-900/70 text-brand-700 dark:text-brand-300 text-[10px] sm:text-xs font-semibold px-2 sm:px-3 py-2 rounded-lg transition-colors sm:w-auto"
-            onClick={() => alert(`Viewing profile for ${doctor.name}`)}
+            onClick={() => onViewProfile?.(doctor)}
           >
             <ExternalLink className="w-3 h-3 hidden sm:block" />
             {t('viewDoctor')}
