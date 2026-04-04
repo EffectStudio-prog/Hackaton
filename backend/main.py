@@ -190,6 +190,14 @@ class FacilitySchema(BaseModel):
     description: str
 
 
+class DiseasePredictionSchema(BaseModel):
+    disease_key: str
+    disease: str
+    probability: float
+    confidence: str
+    reasons: List[str] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     reply: str
     summary: str = ""
@@ -243,14 +251,6 @@ class PredictRequest(BaseModel):
     symptoms: List[str] = Field(default_factory=list)
     text: str = ""
     language: str = "en"
-
-
-class DiseasePredictionSchema(BaseModel):
-    disease_key: str
-    disease: str
-    probability: float
-    confidence: str
-    reasons: List[str] = Field(default_factory=list)
 
 
 class PredictResponse(BaseModel):
