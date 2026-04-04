@@ -1,8 +1,12 @@
 import hashlib
 import secrets
 
-from backend.database import SessionLocal, engine
-from backend.models import Base, Doctor
+try:
+    from .database import SessionLocal, engine
+    from .models import Base, Doctor
+except ImportError:  # pragma: no cover - allows running as a top-level module
+    from database import SessionLocal, engine  # type: ignore
+    from models import Base, Doctor  # type: ignore
 
 
 def hash_password(password: str) -> str:

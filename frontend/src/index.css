@@ -22,19 +22,6 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     overflow: hidden;
-    background:
-      radial-gradient(circle at top left, rgba(215, 232, 255, 0.84), transparent 24%),
-      radial-gradient(circle at 85% 16%, rgba(232, 241, 255, 0.96), transparent 22%),
-      linear-gradient(180deg, #fbfdff 0%, #f3f8ff 42%, #ebf2ff 100%);
-    color: #172033;
-  }
-
-  html.dark body {
-    background:
-      radial-gradient(circle at top left, rgba(61, 87, 144, 0.32), transparent 24%),
-      radial-gradient(circle at 85% 16%, rgba(58, 96, 156, 0.2), transparent 24%),
-      linear-gradient(180deg, #0b1120 0%, #111827 46%, #172033 100%);
-    color: #f8fafc;
   }
 
   /* Hide scrollbars globally but keep scroll behavior */
@@ -51,72 +38,43 @@
 
 @layer components {
   .glass-card {
-    @apply bg-white/85 dark:bg-slate-900/80 backdrop-blur-xl border border-white/80 dark:border-white/10 rounded-2xl shadow-[0_24px_70px_-45px_rgba(90,164,250,0.35)] dark:shadow-[0_25px_70px_-50px_rgba(0,0,0,0.95)];
+    @apply bg-white/70 dark:bg-gray-800/70 backdrop-blur-md border border-white/40 dark:border-gray-700/60 rounded-2xl shadow-xl shadow-slate-200/60 dark:shadow-none;
   }
 
   .btn-primary {
-    @apply bg-gradient-to-r from-brand-500 to-brand-700 hover:opacity-95 text-white font-semibold px-5 py-2.5 rounded-2xl transition-all duration-200 active:scale-95 shadow-lg shadow-brand-300/40 hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-300/70 dark:shadow-none;
+    @apply bg-brand-600 hover:bg-brand-700 text-white font-semibold px-5 py-2.5 rounded-xl transition-all duration-200 active:scale-95 shadow-md shadow-brand-500/20 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/60;
   }
 
   .btn-ghost {
-    @apply bg-white/80 hover:bg-white dark:bg-slate-900/75 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 font-medium px-3 py-2 rounded-2xl transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-300/40 border border-white/80 dark:border-white/10;
+    @apply bg-transparent hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 font-medium px-3 py-2 rounded-lg transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/40;
   }
 
   .input-field {
-    @apply w-full bg-white dark:bg-slate-900/80 text-slate-900 dark:text-gray-100 placeholder-slate-500 dark:placeholder-slate-400 border-2 border-slate-200 dark:border-slate-700 rounded-2xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-brand-300/45 focus:border-brand-400 dark:focus:border-brand-300 transition-all duration-200 resize-none shadow-[0_8px_30px_-24px_rgba(90,164,250,0.3)];
+    @apply w-full bg-white dark:bg-slate-950 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 border-2 border-slate-300 dark:border-slate-600 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 dark:focus:border-brand-400 transition-all duration-200 resize-none shadow-[0_1px_0_rgba(255,255,255,0.45)_inset];
   }
 
   .input-shell {
-    @apply flex items-center gap-3 rounded-[1.7rem] border-2 border-slate-200 bg-white px-4 py-3 shadow-[0_18px_45px_-30px_rgba(90,164,250,0.3)] transition-all duration-200 dark:border-slate-700 dark:bg-slate-900/80;
+    @apply flex items-center gap-3 rounded-2xl border-2 border-slate-300 bg-white px-4 py-3 shadow-sm transition-all duration-200 dark:border-slate-600 dark:bg-slate-950;
   }
 
   .input-shell:focus-within {
-    @apply border-brand-300 ring-2 ring-brand-300/25 dark:border-brand-300;
+    @apply border-brand-500 ring-2 ring-brand-500/20 dark:border-brand-400;
   }
 
   .chat-composer {
-    @apply rounded-[1.8rem] border-2 border-slate-200 bg-white px-3 py-3 shadow-[0_28px_70px_-42px_rgba(90,164,250,0.28)] transition-all duration-200 dark:border-slate-700 dark:bg-slate-900/80;
+    @apply rounded-[1.6rem] border-2 border-slate-300 bg-white px-3 py-3 shadow-[0_18px_50px_-30px_rgba(15,23,42,0.45)] transition-all duration-200 dark:border-slate-600 dark:bg-slate-950;
   }
 
   .chat-composer:focus-within {
-    @apply border-brand-300 ring-2 ring-brand-300/25 dark:border-brand-300;
+    @apply border-brand-500 ring-2 ring-brand-500/20 dark:border-brand-400;
   }
 
   .composer-icon-button {
-    @apply flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border-2 border-slate-200 bg-white text-slate-700 transition-colors hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-200 dark:hover:border-brand-300 dark:hover:bg-brand-400/10 dark:hover:text-brand-100;
-  }
-
-  .glass-shell {
-    @apply border border-white/80 bg-white/80 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/75;
-    box-shadow:
-      0 24px 80px -48px rgba(90, 164, 250, 0.32),
-      inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  }
-
-  .liquid-cta {
-    @apply inline-flex items-center justify-between gap-3 rounded-[1.35rem] bg-gradient-to-r from-brand-500 to-brand-700 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-brand-300/40 transition-all hover:opacity-95 dark:shadow-none;
-  }
-
-  .liquid-secondary {
-    @apply inline-flex items-center justify-center gap-2 rounded-[1.35rem] border border-white/80 bg-white/80 px-5 py-3 text-sm font-semibold text-slate-700 transition-colors hover:bg-white dark:border-white/10 dark:bg-white/10 dark:text-slate-200 dark:hover:bg-white/10;
-  }
-
-  .liquid-grid {
-    background-image:
-      linear-gradient(rgba(212, 185, 174, 0.18) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(212, 185, 174, 0.18) 1px, transparent 1px);
-    background-size: 34px 34px;
-    background-position: center;
-  }
-
-  .dark .liquid-grid {
-    background-image:
-      linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+    @apply flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border-2 border-slate-300 bg-slate-50 text-slate-700 transition-colors hover:border-brand-400 hover:bg-brand-50 hover:text-brand-700 disabled:opacity-60 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-brand-500 dark:hover:bg-brand-900/30 dark:hover:text-brand-200;
   }
 
   .select-field {
-    @apply w-full appearance-none rounded-2xl border border-slate-200/80 bg-white/90 px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition focus:border-brand-400 focus:ring-2 focus:ring-brand-200 dark:border-slate-700/80 dark:bg-slate-900/75 dark:text-slate-200 dark:focus:ring-brand-900/40;
+    @apply w-full appearance-none rounded-2xl border border-slate-200/80 bg-white/85 px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition focus:border-brand-400 focus:ring-2 focus:ring-brand-200 dark:border-slate-700/80 dark:bg-slate-900/75 dark:text-slate-200 dark:focus:ring-brand-900/40;
     background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
       linear-gradient(135deg, currentColor 50%, transparent 50%),
       linear-gradient(to right, transparent, transparent);
@@ -143,7 +101,7 @@
   }
 
   .dot {
-    @apply w-2 h-2 rounded-full bg-brand-300 inline-block;
+    @apply w-2 h-2 rounded-full bg-brand-400 inline-block;
     animation: pulseDot 1.4s infinite ease-in-out;
   }
   .dot:nth-child(2) { animation-delay: 0.2s; }

@@ -50,10 +50,9 @@ const DoctorCard: React.FC<DoctorCardProps> = ({
   onStartChat,
   onViewProfile,
   reservationUserKey = 'guest',
-  reservationUserLabel,
+  reservationUserLabel = 'Guest patient',
 }) => {
   const { t } = useTranslation()
-  const resolvedReservationUserLabel = reservationUserLabel || t('guestPatientLabel', { defaultValue: 'Guest patient' })
   const key = getSpecialtyKey(doctor.specialty)
   const icon = specialtyIcons[key] || 'DR'
   const gradient = specialtyColors[key] || 'from-brand-500 to-brand-600'
@@ -83,7 +82,7 @@ const DoctorCard: React.FC<DoctorCardProps> = ({
     const result = ensureDoctorReservation({
       doctorId: doctor.id,
       reserverKey: reservationUserKey,
-      patientLabel: resolvedReservationUserLabel,
+      patientLabel: reservationUserLabel,
     })
     setQueueNumber(result.queueNumber)
   }
@@ -148,8 +147,8 @@ const DoctorCard: React.FC<DoctorCardProps> = ({
                 </span>
               </div>
               <p className="mt-1 break-words text-[10px] font-medium text-emerald-800/90 dark:text-emerald-200">
-                  {t('reservedByLabel', {
-                  name: resolvedReservationUserLabel,
+                {t('reservedByLabel', {
+                  name: reservationUserLabel,
                   defaultValue: 'Reserved by: {{name}}',
                 })}
               </p>

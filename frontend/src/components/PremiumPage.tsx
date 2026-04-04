@@ -121,21 +121,21 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
   }
 
   return (
-    <div className="mx-auto flex min-h-full w-full max-w-6xl items-center justify-center py-2 sm:py-4">
-      <div className="w-full">
+    <div className="flex-1 overflow-y-auto px-2 py-6 sm:px-0 sm:py-8">
+      <div className="w-full max-w-7xl mx-auto">
         <button
           onClick={onBack}
-          className="btn-ghost mb-5 inline-flex items-center gap-2"
+          className="btn-ghost inline-flex items-center gap-2 mb-5"
         >
           <ArrowLeft className="w-4 h-4" />
           {t('backToChat')}
         </button>
 
-        <section className="glass-shell relative overflow-hidden rounded-[2.2rem] px-6 py-8 shadow-[0_40px_120px_-55px_rgba(229,111,111,0.42)] dark:shadow-[0_40px_120px_-60px_rgba(0,0,0,0.85)] sm:px-8 sm:py-10">
-          <div className="absolute -top-8 right-0 h-36 w-36 rounded-full bg-brand-200/45 blur-3xl dark:bg-brand-400/10" />
+        <section className="relative overflow-hidden rounded-[2rem] border border-amber-200/60 bg-gradient-to-br from-amber-50 via-white to-orange-100 px-6 py-8 shadow-2xl shadow-amber-500/10 dark:border-amber-500/20 dark:from-slate-900 dark:via-slate-900 dark:to-amber-950/40 sm:px-8 sm:py-10">
+          <div className="absolute -top-8 right-0 h-36 w-36 rounded-full bg-amber-300/30 blur-3xl dark:bg-amber-500/15" />
           <div className="relative flex flex-col gap-8 xl:flex-row xl:items-start xl:justify-between">
             <div className="flex-1 xl:max-w-3xl">
-              <div className="inline-flex items-center gap-2 rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-brand-600 dark:bg-brand-900/20 dark:text-brand-300">
+              <div className="inline-flex items-center gap-2 rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
                 <Crown className="w-3.5 h-3.5" />
                 {isPremium ? t('premiumActive') : t('premiumHeading')}
               </div>
@@ -156,9 +156,9 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
                   return (
                     <div
                       key={feature.title}
-                      className="rounded-2xl border border-white/80 bg-white/75 p-4 shadow-lg shadow-brand-100/50 dark:border-white/10 dark:bg-white/10 dark:shadow-none"
+                      className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-lg shadow-slate-200/50 dark:border-slate-700 dark:bg-slate-900/70 dark:shadow-none"
                     >
-                      <Icon className="w-5 h-5 text-brand-600 dark:text-brand-300" />
+                      <Icon className="w-5 h-5 text-amber-600 dark:text-amber-300" />
                       <p className="mt-3 text-sm font-semibold text-slate-900 dark:text-white">{feature.title}</p>
                       <p className="mt-1 text-xs leading-6 text-slate-600 dark:text-slate-300">{feature.description}</p>
                     </div>
@@ -167,7 +167,7 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
               </div>
             </div>
 
-            <div className="glass-shell w-full rounded-[1.9rem] p-5 xl:max-w-[25rem] sm:p-6">
+            <div className="glass-card w-full xl:max-w-[25rem] p-5 sm:p-6">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-600 dark:text-slate-300">
                 <ShieldCheck className="w-4 h-4 text-emerald-500" />
                 {t('premiumSafeCheckout')}
@@ -180,8 +180,8 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
                     onClick={() => setSelectedPlan(plan.id)}
                     className={`w-full rounded-2xl border px-4 py-4 text-left transition-all ${
                       selectedPlan === plan.id
-                        ? 'border-brand-300 bg-brand-50 shadow-lg shadow-brand-200/50 dark:border-brand-300/40 dark:bg-brand-400/10'
-                        : 'border-white/80 bg-white/75 hover:border-brand-200 dark:border-white/10 dark:bg-white/10'
+                        ? 'border-amber-400 bg-amber-50 shadow-lg shadow-amber-500/10 dark:border-amber-300 dark:bg-amber-500/10'
+                        : 'border-slate-200 bg-white/80 hover:border-amber-300 dark:border-slate-700 dark:bg-slate-900/60'
                     }`}
                   >
                     <div className="flex items-start justify-between gap-4">
@@ -303,7 +303,7 @@ const PremiumPage: React.FC<PremiumPageProps> = ({
               {!isPremium ? (
                 <button
                   onClick={handleActivate}
-                  className="btn-primary mt-5 flex w-full items-center justify-center gap-2"
+                  className="btn-primary mt-5 w-full flex items-center justify-center gap-2"
                 >
                   <BadgeCheck className="w-4 h-4" />
                   {t('premiumActivate')}

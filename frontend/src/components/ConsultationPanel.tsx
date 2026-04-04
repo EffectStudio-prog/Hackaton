@@ -100,7 +100,7 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
     return t('doctorBookingDraft', {
       defaultValue:
         'Salom. Ko‘rik uchun vaqt band qilishimiz mumkin. Sizga qulay kun va vaqtni yozib yuboring. Agar istasangiz, bugun yoki ertaga bo‘sh vaqtlarni ham taklif qilaman.',
-    }) + (trimmed ? `\n\n${t('doctorBookingDraftContext', { defaultValue: 'Short note:' })} ${trimmed.slice(0, 140)}` : '')
+    }) + (trimmed ? `\n\n${t('doctorBookingDraftContext', { defaultValue: 'Qisqa izoh:' })} ${trimmed.slice(0, 140)}` : '')
   }, [t])
 
   const fetchConsultation = useCallback(async (consultationId: number) => {
@@ -164,7 +164,7 @@ const ConsultationPanel: React.FC<ConsultationPanelProps> = ({
           doctor_name: demoSession?.doctorName ?? doctor?.name ?? t('doctorConsultationTitle'),
           doctor_specialty: demoSession?.doctorSpecialty ?? doctor?.specialty ?? t('consultationReady'),
           patient_email: demoSession?.patientLabel ?? 'demo@patient.local',
-          patient_label: demoSession?.patientLabel ?? t('demoPatientLabel', { defaultValue: 'Demo patient' }),
+          patient_label: demoSession?.patientLabel ?? 'Demo patient',
           status: 'open',
           created_at: now,
           updated_at: now,

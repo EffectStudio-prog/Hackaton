@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react'
-import { BriefcaseMedical, Camera, Crown, Eye, FileCheck2, LogOut, Mail, Phone, ShieldCheck, User } from 'lucide-react'
+import { BriefcaseMedical, Camera, Crown, Eye, FileCheck2, LogOut, Mail, ShieldCheck, User } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 interface CommonUserProfile {
@@ -8,7 +8,6 @@ interface CommonUserProfile {
   email: string
   is_premium: boolean
   photo_url?: string
-  phone_number?: string
 }
 
 interface DoctorProfile {
@@ -156,15 +155,6 @@ const ProfilePage: React.FC<ProfilePageProps> = ({
                   {doctorUser?.email || authUser?.email}
                 </p>
               </div>
-              {authUser?.phone_number && !isDoctor && (
-                <div className="rounded-3xl bg-white/70 p-4 dark:bg-slate-900/60">
-                  <p className="text-xs uppercase tracking-[0.18em] text-slate-400">{t('phoneNumber', { defaultValue: 'Phone number' })}</p>
-                  <p className="mt-2 inline-flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
-                    <Phone className="h-4 w-4 text-brand-500" />
-                    {authUser.phone_number}
-                  </p>
-                </div>
-              )}
               {authUser && !isDoctor && (
                 <div className="rounded-3xl bg-white/70 p-4 dark:bg-slate-900/60">
                   <p className="text-xs uppercase tracking-[0.18em] text-slate-400">{t('premiumBadge')}</p>

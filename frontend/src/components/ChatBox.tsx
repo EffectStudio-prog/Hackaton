@@ -473,11 +473,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
       const errorMsg: Message = {
         id: genId(),
         role: 'ai',
-        content: t('chatBackendUnavailable', {
-          error: errText,
-          defaultValue:
-            'Could not reach the backend.\n\nMake sure:\n- The FastAPI server is running on port 8000\n- The triage API is available\n\nError: {{error}}',
-        }),
+        content: `Could not reach the backend.\n\nMake sure:\n- The FastAPI server is running on port 8000\n- The triage API is available\n\nError: ${errText}`,
       }
 
       const failedMessages = pendingMessages.filter(message => message.id !== 'typing').concat(errorMsg)
@@ -486,7 +482,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
     } finally {
       setIsLoading(false)
     }
-  }, [currentConversationId, i18n.language, isLoading, isPremium, language, messages, selectedAttachments, t, upsertConversation, userId])
+  }, [currentConversationId, i18n.language, isLoading, isPremium, language, messages, selectedAttachments, upsertConversation, userId])
 
   const handleAttachmentUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = event.target.files
@@ -518,12 +514,8 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [])
 
-  const suggestions = [
-    t('chatSuggestionOne', { defaultValue: 'I have a severe headache and nausea' }),
-    t('chatSuggestionTwo', { defaultValue: 'My chest hurts and I feel short of breath' }),
-    t('chatSuggestionThree', { defaultValue: 'I have a rash on my arm' }),
-    t('chatSuggestionFour', { defaultValue: 'My child has a high fever' }),
-  ]
+  const lang = i18n.language?.split('-')[0] || 'en'
+  const suggestions = SUGGESTIONS[lang] ?? SUGGESTIONS.en
   const showWelcome = messages.length === 0 && !currentConversationId
   const reservationUserKey = userId ? `user-${userId}` : patientSessionKey
   const reservationUserLabel = userLabel || t('callCenterPatientLabel', { defaultValue: 'Call center visitor' })
@@ -724,11 +716,11 @@ const ChatBox: React.FC<ChatBoxProps> = ({ isPremium, userId, userLabel, languag
             }}
             initialConsultationId={consultationState.consultationId}
             variant="page"
-              demoSession={{
-                doctorName: consultationState.target.name,
-                doctorSpecialty: consultationState.target.specialty,
-                patientLabel: consultationState.patientLabel ?? t('demoPatientLabel', { defaultValue: 'Demo patient' }),
-              }}
+            demoSession={{
+              doctorName: consultationState.target.name,
+              doctorSpecialty: consultationState.target.specialty,
+              patientLabel: consultationState.patientLabel ?? 'Demo patient',
+            }}
             onClose={() => setConsultationState(null)}
           />
         ) : (

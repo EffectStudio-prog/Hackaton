@@ -9,7 +9,6 @@ import ChatBox from './components/ChatBox'
 import ConsultationPanel from './components/ConsultationPanel'
 import DiseasePredictorPage from './components/DiseasePredictorPage'
 import DoctorAuthModal from './components/DoctorAuthModal'
-import LandingPage from './components/LandingPage'
 import MentalWellnessPage from './components/MentalWellnessPage'
 import PremiumPage from './components/PremiumPage'
 import ProfilePage from './components/ProfilePage'
@@ -30,7 +29,6 @@ interface AuthUser {
   email: string
   is_premium: boolean
   photo_url?: string
-  phone_number?: string
 }
 
 interface DoctorUser {
@@ -164,37 +162,6 @@ function App() {
     setCurrentLang(activeLanguage)
     document.documentElement.lang = activeLanguage
   }, [i18n, i18n.language, i18n.resolvedLanguage])
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-
-    const currentUrl = new URL(window.location.href)
-    const telegramAuth = currentUrl.searchParams.get('telegram_auth')
-    const telegramError = currentUrl.searchParams.get('telegram_error')
-    if (!telegramAuth && !telegramError) {
-      return
-    }
-
-    if (telegramAuth) {
-      try {
-        const normalized = telegramAuth.replace(/-/g, '+').replace(/_/g, '/')
-        const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4)
-        const decoded = JSON.parse(window.atob(padded)) as AuthUser
-        const nextUser: AuthUser = {
-          ...decoded,
-          username: decoded.username ?? decoded.email ?? '',
-        }
-        setAuthUser(nextUser)
-        setIsPremium(Boolean(nextUser.is_premium))
-        setActivePage('chat')
-        setShowAuthModal(false)
-      } catch {}
-    }
-
-    currentUrl.searchParams.delete('telegram_auth')
-    currentUrl.searchParams.delete('telegram_error')
-    window.history.replaceState({}, document.title, `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`)
-  }, [])
 
   useEffect(() => {
     localStorage.setItem('medmap-premium', String(isPremium))
@@ -478,8 +445,8 @@ function App() {
   const currentLangLabel = languages.find(language => language.code === currentLang)?.label || 'EN'
 
   return (
-    <div className="h-full flex flex-col bg-[linear-gradient(180deg,#fffdfb_0%,#fff7f5_45%,#fff3f1_100%)] text-slate-900 transition-colors duration-300 dark:bg-[linear-gradient(180deg,#0d1324_0%,#10182b_50%,#151c31_100%)] dark:text-white">
-      <header className="relative z-50 mx-3 mt-3 flex-shrink-0 rounded-[1.7rem] border border-white/70 bg-white/70 px-3 py-2.5 shadow-[0_22px_60px_-35px_rgba(240,128,128,0.45)] backdrop-blur-xl dark:border-white/10 dark:bg-white/10 dark:shadow-[0_24px_70px_-40px_rgba(0,0,0,0.9)] sm:mx-4 sm:mt-4 sm:px-4 sm:py-3">
+    <div className="h-full flex flex-col bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 dark:from-gray-950 dark:via-gray-900 dark:to-slate-900 transition-colors duration-300">
+      <header className="relative z-50 flex-shrink-0 border-b border-white/50 dark:border-gray-700/50 bg-white/60 dark:bg-gray-900/60 backdrop-blur-md px-3 sm:px-4 py-2.5 sm:py-3">
         <div className="w-full max-w-7xl mx-auto flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
             <button
@@ -603,7 +570,7 @@ function App() {
                 setActivePage(value => (value === 'wellness' ? 'chat' : 'wellness'))
               }}
               className={`btn-ghost flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold ${
-                activePage === 'wellness' ? 'text-brand-700 dark:text-brand-300' : ''
+                activePage === 'wellness' ? 'text-cyan-700 dark:text-cyan-300' : ''
               }`}
               title={t('mentalWellnessNav', { defaultValue: 'Mental wellness support' })}
             >
@@ -651,13 +618,34 @@ function App() {
         </div>
       </header>
 
-      <main className={`relative flex-1 overflow-hidden w-full flex flex-col ${showAdminDashboard ? 'max-w-7xl mx-auto px-2 sm:px-4 lg:px-6' : 'max-w-none px-0'}`}>
+      <main
+        className={`flex-1 overflow-hidden w-full flex flex-col ${
+          showAdminDashboard || showPremiumPage
+            ? 'max-w-7xl mx-auto px-2 sm:px-4 lg:px-6'
+            : 'max-w-none px-0'
+        }`}
+      >
         {showAdminDashboard ? (
           <Dashboard
             onBack={() => {
               setShowAdminDashboard(false)
               setPremiumConfig(loadPremiumConfig())
             }}
+          />
+        ) : showPremiumPage ? (
+          <PremiumPage
+            isPremium={doctorUser && !authUser ? Boolean(doctorUser.is_premium) : isPremium}
+            onActivate={handleActivatePremium}
+            onDeactivate={handleDeactivatePremium}
+            onBack={() => setShowPremiumPage(false)}
+            monthlyPrice={premiumConfig.monthlyPrice}
+            yearlyPrice={premiumConfig.yearlyPrice}
+            referralPoints={referralState.points}
+            referralCount={referralState.referrals}
+            referralCode={referralCode}
+            referralLink={referralLink}
+            onRedeemReferralMonth={handleRedeemReferralMonth}
+            accountType={doctorUser && !authUser ? 'doctor' : 'user'}
           />
         ) : activePage === 'profile' && (authUser || doctorUser || viewedDoctorProfile) ? (
           <ProfilePage
@@ -698,14 +686,6 @@ function App() {
           <MentalWellnessPage
             onBack={() => setActivePage('chat')}
           />
-        ) : !authUser && !doctorUser && activePage === 'chat' ? (
-          <LandingPage
-            onOpenAuth={() => setShowAuthModal(true)}
-            onOpenDoctorAuth={() => setShowDoctorAuthModal(true)}
-            onOpenPremium={() => setShowPremiumPage(true)}
-            onOpenPredictor={() => setActivePage('predictor')}
-            onOpenWellness={() => setActivePage('wellness')}
-          />
         ) : (
           <ChatBox
             isPremium={isPremium}
@@ -738,27 +718,6 @@ function App() {
           className="fixed inset-0 z-30"
           onClick={() => setShowLangMenu(false)}
         />
-      )}
-
-      {showPremiumPage && (
-        <div className="fixed inset-0 z-[70] bg-[#fff7f1]/65 px-3 py-4 backdrop-blur-xl dark:bg-[#060814]/70 sm:px-4 sm:py-6">
-          <div className="h-full overflow-y-auto">
-            <PremiumPage
-              isPremium={doctorUser && !authUser ? Boolean(doctorUser.is_premium) : isPremium}
-              onActivate={handleActivatePremium}
-              onDeactivate={handleDeactivatePremium}
-              onBack={() => setShowPremiumPage(false)}
-              monthlyPrice={premiumConfig.monthlyPrice}
-              yearlyPrice={premiumConfig.yearlyPrice}
-              referralPoints={referralState.points}
-              referralCount={referralState.referrals}
-              referralCode={referralCode}
-              referralLink={referralLink}
-              onRedeemReferralMonth={handleRedeemReferralMonth}
-              accountType={doctorUser && !authUser ? 'doctor' : 'user'}
-            />
-          </div>
-        </div>
       )}
 
       {showAuthModal && (

@@ -5,17 +5,9 @@ import re
 import hashlib
 import hmac
 import secrets
-import time
-import base64
-import urllib.parse
-import urllib.request
-from typing import Any, Dict, List, Optional
-
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from typing import List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -31,8 +23,13 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     Anthropic = None
 
-from . import database, models
-from .disease_prediction import SYMPTOM_LABELS, localize_label, service as disease_prediction_service
+try:
+    from . import database, models
+    from .disease_prediction import SYMPTOM_LABELS, localize_label, service as disease_prediction_service
+except ImportError:  # pragma: no cover - allows running as `uvicorn main:app`
+    import database  # type: ignore
+    import models  # type: ignore
+    from disease_prediction import SYMPTOM_LABELS, localize_label, service as disease_prediction_service  # type: ignore
 
 
 app = FastAPI(title="MyDoctor Triage API", version="1.1.0")
@@ -58,14 +55,7 @@ def ensure_schema() -> None:
             connection.exec_driver_sql("ALTER TABLE users ADD COLUMN username VARCHAR")
         if "password_hash" not in user_columns:
             connection.exec_driver_sql("ALTER TABLE users ADD COLUMN password_hash VARCHAR")
-        if "telegram_id" not in user_columns:
-            connection.exec_driver_sql("ALTER TABLE users ADD COLUMN telegram_id VARCHAR")
-        if "phone_number" not in user_columns:
-            connection.exec_driver_sql("ALTER TABLE users ADD COLUMN phone_number VARCHAR")
-        if "photo_url" not in user_columns:
-            connection.exec_driver_sql("ALTER TABLE users ADD COLUMN photo_url VARCHAR")
         connection.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users (username)")
-        connection.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_telegram_id ON users (telegram_id)")
         if "email" not in doctor_columns:
             connection.exec_driver_sql("ALTER TABLE doctors ADD COLUMN email VARCHAR")
         if "password_hash" not in doctor_columns:
@@ -92,7 +82,10 @@ def maybe_seed_default_doctors() -> None:
     if has_doctors:
         return
 
-    from .seed import seed_data
+    try:
+        from .seed import seed_data
+    except ImportError:  # pragma: no cover - allows running as `uvicorn main:app`
+        from seed import seed_data  # type: ignore
 
     seed_data()
 
@@ -156,8 +149,6 @@ class UserSchema(BaseModel):
     username: str
     email: str
     is_premium: bool
-    phone_number: str = ""
-    photo_url: str = ""
 
 
 class AuthResponse(BaseModel):
@@ -276,191 +267,6 @@ LANG_MAP = {
     "ru": "Russian",
     "uz": "Uzbek",
 }
-
-TELEGRAM_ISSUER = "https://oauth.telegram.org"
-TELEGRAM_DISCOVERY_URL = f"{TELEGRAM_ISSUER}/.well-known/openid-configuration"
-TELEGRAM_JWKS_URL = f"{TELEGRAM_ISSUER}/.well-known/jwks.json"
-TELEGRAM_AUTHORIZATION_URL = f"{TELEGRAM_ISSUER}/auth"
-TELEGRAM_TOKEN_URL = f"{TELEGRAM_ISSUER}/token"
-TELEGRAM_STATE_TTL_SECONDS = 10 * 60
-_telegram_auth_states: dict[str, dict[str, Any]] = {}
-_telegram_jwks_cache: dict[str, Any] = {"keys": [], "fetched_at": 0.0}
-
-
-def base64url_encode(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).decode("utf-8").rstrip("=")
-
-
-def base64url_decode(value: str) -> bytes:
-    padding_length = (-len(value)) % 4
-    return base64.urlsafe_b64decode(f"{value}{'=' * padding_length}")
-
-
-def telegram_client_id() -> str:
-    return os.getenv("TELEGRAM_CLIENT_ID", "").strip()
-
-
-def telegram_client_secret() -> str:
-    return os.getenv("TELEGRAM_CLIENT_SECRET", "").strip()
-
-
-def telegram_redirect_uri() -> str:
-    return os.getenv("TELEGRAM_REDIRECT_URI", "").strip()
-
-
-def telegram_enabled() -> bool:
-    return bool(telegram_client_id() and telegram_client_secret() and telegram_redirect_uri())
-
-
-def ensure_telegram_configured() -> None:
-    if telegram_enabled():
-        return
-    raise HTTPException(
-        status_code=503,
-        detail="Telegram login is not configured. Set TELEGRAM_CLIENT_ID, TELEGRAM_CLIENT_SECRET, and TELEGRAM_REDIRECT_URI.",
-    )
-
-
-def prune_telegram_auth_states() -> None:
-    now = time.time()
-    expired = [
-        state
-        for state, payload in _telegram_auth_states.items()
-        if now - float(payload.get("created_at", 0)) > TELEGRAM_STATE_TTL_SECONDS
-    ]
-    for state in expired:
-        _telegram_auth_states.pop(state, None)
-
-
-def store_telegram_auth_state(return_to: str) -> tuple[str, str, str]:
-    prune_telegram_auth_states()
-    state = secrets.token_urlsafe(24)
-    code_verifier = base64url_encode(secrets.token_bytes(32))
-    nonce = secrets.token_urlsafe(24)
-    _telegram_auth_states[state] = {
-        "code_verifier": code_verifier,
-        "nonce": nonce,
-        "return_to": return_to,
-        "created_at": time.time(),
-    }
-    return state, code_verifier, nonce
-
-
-def pop_telegram_auth_state(state: str) -> dict[str, Any]:
-    prune_telegram_auth_states()
-    payload = _telegram_auth_states.pop(state, None)
-    if not payload:
-        raise HTTPException(status_code=400, detail="Telegram login state is invalid or expired.")
-    return payload
-
-
-def build_pkce_challenge(code_verifier: str) -> str:
-    return base64url_encode(hashlib.sha256(code_verifier.encode("utf-8")).digest())
-
-
-def fetch_json_url(url: str, method: str = "GET", data: Optional[bytes] = None, headers: Optional[dict[str, str]] = None) -> dict:
-    request = urllib.request.Request(url, data=data, method=method, headers=headers or {})
-    with urllib.request.urlopen(request, timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def get_telegram_jwks() -> list[dict[str, Any]]:
-    now = time.time()
-    if now - float(_telegram_jwks_cache.get("fetched_at", 0.0)) < 3600 and _telegram_jwks_cache.get("keys"):
-        return list(_telegram_jwks_cache["keys"])
-
-    payload = fetch_json_url(TELEGRAM_JWKS_URL)
-    keys = payload.get("keys", []) if isinstance(payload, dict) else []
-    _telegram_jwks_cache["keys"] = keys
-    _telegram_jwks_cache["fetched_at"] = now
-    return list(keys)
-
-
-def verify_telegram_jwt(id_token: str, expected_nonce: str) -> dict[str, Any]:
-    parts = id_token.split(".")
-    if len(parts) != 3:
-        raise HTTPException(status_code=400, detail="Telegram ID token format is invalid.")
-
-    header = json.loads(base64url_decode(parts[0]).decode("utf-8"))
-    payload = json.loads(base64url_decode(parts[1]).decode("utf-8"))
-    signature = base64url_decode(parts[2])
-
-    kid = str(header.get("kid", ""))
-    alg = str(header.get("alg", ""))
-    if alg != "RS256":
-        raise HTTPException(status_code=400, detail="Telegram ID token algorithm is invalid.")
-
-    jwk = next((item for item in get_telegram_jwks() if str(item.get("kid", "")) == kid), None)
-    if not jwk:
-        raise HTTPException(status_code=400, detail="Telegram signing key was not found.")
-
-    public_numbers = rsa.RSAPublicNumbers(
-        e=int.from_bytes(base64url_decode(str(jwk["e"])), "big"),
-        n=int.from_bytes(base64url_decode(str(jwk["n"])), "big"),
-    )
-    public_key = public_numbers.public_key()
-    signed_data = f"{parts[0]}.{parts[1]}".encode("utf-8")
-
-    try:
-        public_key.verify(signature, signed_data, padding.PKCS1v15(), hashes.SHA256())
-    except Exception as exc:  # pragma: no cover - crypto failure path
-        raise HTTPException(status_code=400, detail="Telegram ID token signature is invalid.") from exc
-
-    now = int(time.time())
-    if str(payload.get("iss", "")) != TELEGRAM_ISSUER:
-        raise HTTPException(status_code=400, detail="Telegram ID token issuer is invalid.")
-    if str(payload.get("aud", "")) != telegram_client_id():
-        raise HTTPException(status_code=400, detail="Telegram ID token audience is invalid.")
-    if int(payload.get("exp", 0)) < now:
-        raise HTTPException(status_code=400, detail="Telegram ID token has expired.")
-    if expected_nonce and str(payload.get("nonce", "")) != expected_nonce:
-        raise HTTPException(status_code=400, detail="Telegram ID token nonce is invalid.")
-
-    return payload
-
-
-def exchange_telegram_code_for_token(code: str, code_verifier: str) -> dict[str, Any]:
-    credentials = f"{telegram_client_id()}:{telegram_client_secret()}".encode("utf-8")
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Authorization": f"Basic {base64.b64encode(credentials).decode('utf-8')}",
-    }
-    form_body = urllib.parse.urlencode(
-        {
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": telegram_redirect_uri(),
-            "client_id": telegram_client_id(),
-            "code_verifier": code_verifier,
-        }
-    ).encode("utf-8")
-
-    try:
-        return fetch_json_url(TELEGRAM_TOKEN_URL, method="POST", data=form_body, headers=headers)
-    except Exception as exc:  # pragma: no cover - network failure path
-        raise HTTPException(status_code=502, detail="Telegram token exchange failed.") from exc
-
-
-def sanitize_return_to_url(return_to: Optional[str]) -> str:
-    candidate = (return_to or "").strip()
-    if not candidate:
-        return "/"
-    parsed = urllib.parse.urlparse(candidate)
-    if parsed.scheme in {"http", "https"}:
-        return candidate
-    if candidate.startswith("/"):
-        return candidate
-    return "/"
-
-
-def build_frontend_redirect_url(base_url: str, params: dict[str, str]) -> str:
-    parsed = urllib.parse.urlparse(base_url)
-    current_query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-    filtered = [(key, value) for key, value in current_query if key not in {"telegram_auth", "telegram_error"}]
-    for key, value in params.items():
-        filtered.append((key, value))
-    query = urllib.parse.urlencode(filtered)
-    return urllib.parse.urlunparse(parsed._replace(query=query))
 
 SPECIAL_ADMIN_USERNAME = "mydoctor-admin"
 RESERVED_USERNAMES = {"admin", SPECIAL_ADMIN_USERNAME}
@@ -1362,8 +1168,6 @@ def serialize_user(user: models.User) -> UserSchema:
         username=user.username or "",
         email=user.email or "",
         is_premium=bool(user.is_premium),
-        phone_number=user.phone_number or "",
-        photo_url=user.photo_url or "",
     )
 
 
@@ -2871,144 +2675,6 @@ def login(req: AuthRequest, db: Session = Depends(database.get_db)):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
     return AuthResponse(user=serialize_user(user))
-
-
-@app.get("/auth/telegram/start")
-def telegram_login_start(return_to: Optional[str] = None):
-    ensure_telegram_configured()
-    next_return_to = sanitize_return_to_url(return_to)
-    state, code_verifier, nonce = store_telegram_auth_state(next_return_to)
-    challenge = build_pkce_challenge(code_verifier)
-    query = urllib.parse.urlencode(
-        {
-            "client_id": telegram_client_id(),
-            "redirect_uri": telegram_redirect_uri(),
-            "response_type": "code",
-            "scope": "openid profile phone",
-            "state": state,
-            "nonce": nonce,
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-        }
-    )
-    return RedirectResponse(url=f"{TELEGRAM_AUTHORIZATION_URL}?{query}", status_code=302)
-
-
-@app.get("/auth/telegram/url")
-def telegram_login_url(return_to: Optional[str] = None):
-    ensure_telegram_configured()
-    next_return_to = sanitize_return_to_url(return_to)
-    state, code_verifier, nonce = store_telegram_auth_state(next_return_to)
-    challenge = build_pkce_challenge(code_verifier)
-    query = urllib.parse.urlencode(
-        {
-            "client_id": telegram_client_id(),
-            "redirect_uri": telegram_redirect_uri(),
-            "response_type": "code",
-            "scope": "openid profile phone",
-            "state": state,
-            "nonce": nonce,
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-        }
-    )
-    return {"auth_url": f"{TELEGRAM_AUTHORIZATION_URL}?{query}"}
-
-
-@app.get("/auth/telegram/callback")
-def telegram_login_callback(
-    code: Optional[str] = None,
-    state: Optional[str] = None,
-    error: Optional[str] = None,
-    db: Session = Depends(database.get_db),
-):
-    ensure_telegram_configured()
-    state_payload = pop_telegram_auth_state(state or "")
-    return_to = sanitize_return_to_url(str(state_payload.get("return_to", "/")))
-
-    if error:
-      redirect_url = build_frontend_redirect_url(return_to, {"telegram_error": error})
-      return RedirectResponse(url=redirect_url, status_code=302)
-
-    if not code:
-        redirect_url = build_frontend_redirect_url(return_to, {"telegram_error": "missing_code"})
-        return RedirectResponse(url=redirect_url, status_code=302)
-
-    token_payload = exchange_telegram_code_for_token(code, str(state_payload["code_verifier"]))
-    id_token = str(token_payload.get("id_token", "")).strip()
-    if not id_token:
-        redirect_url = build_frontend_redirect_url(return_to, {"telegram_error": "missing_id_token"})
-        return RedirectResponse(url=redirect_url, status_code=302)
-
-    claims = verify_telegram_jwt(id_token, str(state_payload["nonce"]))
-    telegram_subject = str(claims.get("sub") or claims.get("id") or "").strip()
-    if not telegram_subject:
-        redirect_url = build_frontend_redirect_url(return_to, {"telegram_error": "missing_subject"})
-        return RedirectResponse(url=redirect_url, status_code=302)
-
-    preferred_username = normalize_username(str(claims.get("preferred_username", "")).strip())
-    display_name = str(claims.get("name", "")).strip()
-    phone_number = str(claims.get("phone_number", "")).strip()
-    photo_url = str(claims.get("picture", "")).strip()
-    synthetic_email = f"telegram-{telegram_subject}@telegram.local"
-
-    user = db.query(models.User).filter(models.User.telegram_id == telegram_subject).first()
-    if not user:
-        user = db.query(models.User).filter(models.User.email == synthetic_email).first()
-
-    if not user:
-        taken = {
-            normalize_username(item.username)
-            for item in db.query(models.User).all()
-            if normalize_username(item.username)
-        }
-        username_value = make_unique_username(
-            preferred_username or display_name or f"tg{telegram_subject[-6:]}",
-            taken,
-            fallback_prefix=f"tg{telegram_subject[-6:] or 'user'}",
-        )
-        user = models.User(
-            username=username_value,
-            email=synthetic_email,
-            telegram_id=telegram_subject,
-            password_hash=None,
-            phone_number=phone_number or None,
-            photo_url=photo_url or None,
-            is_premium=False,
-        )
-        db.add(user)
-    else:
-        if preferred_username:
-            desired = normalize_username(preferred_username)
-            if desired and desired != normalize_username(user.username):
-                taken = {
-                    normalize_username(item.username)
-                    for item in db.query(models.User).filter(models.User.id != user.id).all()
-                    if normalize_username(item.username)
-                }
-                user.username = make_unique_username(desired, taken, fallback_prefix=f"tg{telegram_subject[-6:] or 'user'}")
-        elif not user.username:
-            taken = {
-                normalize_username(item.username)
-                for item in db.query(models.User).filter(models.User.id != user.id).all()
-                if normalize_username(item.username)
-            }
-            user.username = make_unique_username(display_name or f"tg{telegram_subject[-6:]}", taken, fallback_prefix=f"tg{telegram_subject[-6:] or 'user'}")
-
-        if not user.email:
-            user.email = synthetic_email
-        user.telegram_id = telegram_subject
-        if phone_number:
-            user.phone_number = phone_number
-        if photo_url:
-            user.photo_url = photo_url
-
-    db.commit()
-    db.refresh(user)
-
-    payload = base64url_encode(json.dumps(serialize_user(user).model_dump()).encode("utf-8"))
-    redirect_url = build_frontend_redirect_url(return_to, {"telegram_auth": payload})
-    return RedirectResponse(url=redirect_url, status_code=302)
 
 
 @app.post("/auth/premium", response_model=AuthResponse)

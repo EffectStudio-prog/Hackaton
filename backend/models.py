@@ -1,6 +1,10 @@
 from sqlalchemy import Column, Integer, String, Boolean, Float, Text, ForeignKey, DateTime
 from sqlalchemy.sql import func
-from .database import Base
+
+try:
+    from .database import Base
+except ImportError:  # pragma: no cover - allows running as `uvicorn main:app`
+    from database import Base  # type: ignore
 
 
 class User(Base):
@@ -9,10 +13,7 @@ class User(Base):
     id         = Column(Integer, primary_key=True, index=True)
     username   = Column(String, unique=True, index=True, nullable=True)
     email      = Column(String, unique=True, index=True, nullable=True)
-    telegram_id = Column(String, unique=True, index=True, nullable=True)
     password_hash = Column(String, nullable=True)
-    phone_number = Column(String, nullable=True)
-    photo_url = Column(String, nullable=True)
     is_premium = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
